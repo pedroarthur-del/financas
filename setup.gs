@@ -45,7 +45,7 @@ const SEG = {
   conviteHoras: 48
 };
 
-const VERSAO = '2.2.0';
+const VERSAO = '2.3.0';
 
 const ABA = { respostas: 'Respostas', lanc: 'Lançamentos', tetos: 'Tetos', resumo: 'Resumo', links: 'Links', receitas: 'Receitas', contas: 'Contas fixas' };
 
@@ -538,7 +538,7 @@ function lancarContasDoDia() {
     const marca = `CF:${ct.id}:${mes}`;
     if (diaConta > d || props.getProperty(marca)) return;
     if (ct.criada && ct.criada > venc) return; // conta criada depois do vencimento deste mês
-    lanc.appendRow([new Date(y, m - 1, diaConta, 12), ct.valor, ct.categoria, ct.forma, ct.nome, 'Conta fixa']);
+    lanc.appendRow([new Date(y, m - 1, diaConta, 12), ct.valor, ct.categoria, ct.forma, ct.nome, 'Conta fixa', new Date()]);
     props.setProperty(marca, '1');
   });
 }
@@ -552,7 +552,7 @@ const Ajustes = {
   salvar(c) {
     const a = this.ler();
     if (c.saldo !== undefined) {
-      a.saldo = c.saldo === null ? null : { valor: V.saldo(c.saldo.valor), data: V.data(c.saldo.data) };
+      a.saldo = c.saldo === null ? null : { valor: V.saldo(c.saldo.valor), data: V.data(c.saldo.data), em: new Date().toISOString() };
     }
     if (c.cartao !== undefined) {
       a.cartao = c.cartao === null ? null : { fecha: V.dia(c.cartao.fecha), vence: V.dia(c.cartao.vence) };
@@ -581,7 +581,8 @@ const Dados = {
         categoria: String(l[2] || 'Outros'),
         forma: String(l[3] || ''),
         descricao: String(l[4] || ''),
-        origem: String(l[5] || '')
+        origem: String(l[5] || ''),
+        criado: l[6] instanceof Date ? l[6].toISOString() : ''
       }));
     const tetos = ss.getSheetByName(ABA.tetos).getDataRange().getValues().slice(1)
       .filter(l => l[0] && CONFIG.categorias.includes(String(l[0])))
@@ -734,13 +735,16 @@ function aoEnviarFormulario(e) {
     : Utilities.formatDate(r.getTimestamp(), CONFIG.fuso, 'yyyy-MM-dd');
   const [y, m, d] = ymd.split('-').map(Number);
 
-  Dados.planilha().getSheetByName(ABA.lanc).appendRow([
+  const abaLanc = Dados.planilha().getSheetByName(ABA.lanc);
+  if (abaLanc.getRange(1, 7).getValue() !== 'Lançado em') abaLanc.getRange(1, 7).setValue('Lançado em').setFontWeight('bold').setBackground('#E8EAF6');
+  abaLanc.appendRow([
     new Date(y, m - 1, d, 12),
     valor,
     resp[TITULO.categoria] || 'Outros',
     resp[TITULO.forma] || '',
     String(resp[TITULO.descricao] || '').slice(0, 200),
-    'Formulário'
+    'Formulário',
+    new Date() // Lançado em: separa o que entrou antes e depois do saldo informado
   ]);
 }
 

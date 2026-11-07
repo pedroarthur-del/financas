@@ -868,7 +868,10 @@
     (E.dados.lancamentos || []).forEach(l => {
       if (String(l.data) < desde) return;
       if (usaCartao(l.forma)) { addFatura(pagamentoCredito(l.data), l.valor, false); return; }
-      if (dentro(l.data)) slot(l.data).sai.push({ desc: l.descricao || l.categoria, valor: l.valor, cat: l.categoria });
+      // lançado depois de informar o saldo no mesmo dia: ainda não está no saldo informado
+      const anc = E.dados.ajustes?.saldo;
+      const depois = !!(anc && anc.em && l.criado && l.data === anc.data && l.criado > anc.em);
+      if (dentro(l.data)) slot(l.data).sai.push({ desc: l.descricao || l.categoria, valor: l.valor, cat: l.categoria, depois });
     });
 
     // 3. contas fixas que ainda vão vencer (as vencidas já foram lançadas pela rotina diária)
@@ -896,18 +899,23 @@
     const ini = new Date(ref.getFullYear(), ref.getMonth(), 1), fim = new Date(ref.getFullYear(), ref.getMonth() + 1, 0);
     const ancora = E.dados.ajustes?.saldo || null;
     const dA = ancora ? deYmd(ancora.data) : null;
-    const de = dA && dA < ini ? new Date(dA.getFullYear(), dA.getMonth(), dA.getDate() + 1) : ini;
+    const de = dA && dA < ini ? dA : ini;
     const ate = dA && dA > fim ? dA : fim;
     const M = movimentos(de, ate);
-    const net = k => { const m = M.get(k); return m ? m.ent.reduce((s, x) => s + x.valor, 0) - m.sai.reduce((s, x) => s + x.valor, 0) : 0; };
+    const net = (k, so) => { const m = M.get(k); if (!m) return 0; const f = x => !so || (so === 'depois' ? x.depois : !x.depois); return m.ent.filter(f).reduce((s, x) => s + x.valor, 0) - m.sai.filter(f).reduce((s, x) => s + x.valor, 0); };
 
     // saldo no início do mês
     let inicial = 0;
     if (ancora) {
       inicial = ancora.valor;
       const kA = ancora.data, kIni = ymd(ini);
-      if (kA < kIni) { for (let d = new Date(dA.getFullYear(), dA.getMonth(), dA.getDate() + 1); d < ini; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) inicial += net(ymd(d)); }
-      else { for (let d = new Date(+ini); ymd(d) <= kA; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) inicial -= net(ymd(d)); }
+      // o saldo informado já inclui o que saiu antes dele no mesmo dia; o lançado depois ainda vai sair
+      if (kA < kIni) {
+        inicial += net(kA, 'depois');
+        for (let d = new Date(dA.getFullYear(), dA.getMonth(), dA.getDate() + 1); d < ini; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) inicial += net(ymd(d));
+      } else {
+        for (let d = new Date(+ini); ymd(d) <= kA; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) inicial -= ymd(d) === kA ? net(ymd(d), 'antes') : net(ymd(d));
+      }
     }
     const dias = [];
     let saldo = inicial;

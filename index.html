@@ -1,1 +1,318 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="robots" content="noindex">
+<title>Minhas Finanças</title>
+<style>
+  :root{
+    --bg:#f6f7fb; --card:#ffffff; --tx:#0f172a; --mut:#64748b; --line:#e2e8f0;
+    --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --acc:#4f46e5; --track:#eef2f7;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0b1120; --card:#131c2e; --tx:#e5e7eb; --mut:#94a3b8; --line:#1f2a40;
+           --ok:#22c55e; --warn:#f59e0b; --bad:#f87171; --acc:#818cf8; --track:#1c2639; }
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--tx);
+       padding:16px 16px calc(24px + env(safe-area-inset-bottom));max-width:760px;margin:0 auto;-webkit-font-smoothing:antialiased}
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  h1{font-size:20px;font-weight:700}
+  .mes{display:flex;align-items:center;gap:6px}
+  .mes span{font-weight:600;min-width:84px;text-align:center}
+  button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--tx);border-radius:10px;padding:7px 11px;cursor:pointer}
+  button.pri{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+  .kpis{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+  .kpi,.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+  .kpi small{display:block;color:var(--mut);font-size:12px;margin-bottom:4px}
+  .kpi b{font-size:20px;font-variant-numeric:tabular-nums}
+  .kpi em{display:block;font-style:normal;font-size:12px;color:var(--mut);margin-top:3px}
+  .card{margin-bottom:12px}
+  .card h2{font-size:14px;font-weight:600;margin-bottom:12px;display:flex;justify-content:space-between;align-items:baseline}
+  .card h2 small{font-weight:400;color:var(--mut);font-size:12px}
+  .cat{margin-bottom:12px}
+  .cat .top{display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px;gap:8px}
+  .cat .top span:last-child{color:var(--mut);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .bar{height:8px;background:var(--track);border-radius:99px;overflow:hidden}
+  .bar i{display:block;height:100%;border-radius:99px}
+  .row{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-top:1px solid var(--line);font-size:13px;gap:10px}
+  .row:first-of-type{border-top:0}
+  .row .l{min-width:0}
+  .row .l div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .l small{color:var(--mut);font-size:12px}
+  .row b{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+  .alert{border-radius:12px;padding:11px 13px;font-size:13px;margin-bottom:12px;border:1px solid}
+  .alert.bad{background:color-mix(in srgb,var(--bad) 10%,transparent);border-color:color-mix(in srgb,var(--bad) 35%,transparent)}
+  .alert.warn{background:color-mix(in srgb,var(--warn) 10%,transparent);border-color:color-mix(in srgb,var(--warn) 35%,transparent)}
+  svg text{fill:var(--mut);font-size:10px}
+  .legend{display:flex;gap:14px;font-size:12px;color:var(--mut);margin-top:6px}
+  .legend i{display:inline-block;width:10px;height:3px;border-radius:2px;vertical-align:middle;margin-right:5px}
+  .foot{display:flex;justify-content:space-between;align-items:center;color:var(--mut);font-size:12px;margin-top:6px;gap:8px;flex-wrap:wrap}
+  .cfg label{display:block;font-size:13px;margin:12px 0 5px;color:var(--mut)}
+  .cfg input{width:100%;font:inherit;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--tx)}
+  .cfg p{font-size:13px;color:var(--mut);line-height:1.5}
+  .empty{color:var(--mut);font-size:13px;padding:6px 0}
+  .hide{display:none}
+  a{color:var(--acc)}
+</style>
+</head>
+<body>
 
+<header>
+  <h1>💰 Minhas Finanças</h1>
+  <div class="mes">
+    <button id="prev" aria-label="Mês anterior">‹</button>
+    <span id="mesLabel">—</span>
+    <button id="next" aria-label="Próximo mês">›</button>
+  </div>
+</header>
+
+<!-- Configuração (primeiro acesso) -->
+<section id="cfg" class="card cfg hide">
+  <h2>Conectar à planilha</h2>
+  <p>Cole a URL do App da Web (termina em <b>/exec</b>) e o TOKEN que apareceram no Apps Script. Ficam salvos só neste aparelho.</p>
+  <label for="cfgApi">URL da API</label>
+  <input id="cfgApi" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off">
+  <label for="cfgToken">Token</label>
+  <input id="cfgToken" placeholder="token" autocomplete="off">
+  <p id="cfgErr" class="bad" style="margin-top:10px"></p>
+  <div style="margin-top:14px"><button class="pri" id="cfgSave">Conectar</button></div>
+</section>
+
+<main id="app" class="hide">
+  <div id="alertas"></div>
+
+  <div class="kpis">
+    <div class="kpi"><small>Gasto no mês</small><b id="kGasto">—</b><em id="kGastoSub"></em></div>
+    <div class="kpi"><small>Teto do mês</small><b id="kTeto">—</b><em id="kTetoSub"></em></div>
+    <div class="kpi"><small>Projeção fim do mês</small><b id="kProj">—</b><em id="kProjSub"></em></div>
+    <div class="kpi"><small>Média por dia</small><b id="kDia">—</b><em id="kDiaSub"></em></div>
+  </div>
+
+  <section class="card">
+    <h2>Ritmo do mês <small id="ritmoSub"></small></h2>
+    <div id="ritmo"></div>
+    <div class="legend"><span><i style="background:var(--acc)"></i>Gasto acumulado</span><span><i style="background:var(--mut)"></i>Ritmo ideal p/ o teto</span></div>
+  </section>
+
+  <section class="card">
+    <h2>Por categoria <small>gasto / teto</small></h2>
+    <div id="cats"></div>
+  </section>
+
+  <section class="card">
+    <h2>Por forma de pagamento</h2>
+    <div id="formas"></div>
+  </section>
+
+  <section class="card">
+    <h2>Últimos lançamentos <small id="qtd"></small></h2>
+    <div id="ultimos"></div>
+  </section>
+
+  <div class="foot">
+    <span id="upd"></span>
+    <span>
+      <button id="reload">↻ Atualizar</button>
+      <button id="reset">Desconectar</button>
+    </span>
+  </div>
+</main>
+
+<script>
+(() => {
+  const K = { api: 'fin_api', token: 'fin_token', cache: 'fin_cache' };
+  const $ = id => document.getElementById(id);
+  const brl = v => (v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const pct = v => Math.round(v * 100) + '%';
+  const pad = n => String(n).padStart(2, '0');
+  const store = {
+    get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+    set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+    del: k => { try { localStorage.removeItem(k); } catch {} }
+  };
+
+  // Permite configurar uma vez via link: ?api=...&token=...
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('api') && qs.get('token')) {
+    store.set(K.api, qs.get('api'));
+    store.set(K.token, qs.get('token'));
+    history.replaceState(null, '', location.pathname);
+  }
+
+  const hoje = new Date();
+  let ref = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+  let dados = null;
+
+  function mostrarConfig(msg) {
+    $('app').classList.add('hide');
+    $('cfg').classList.remove('hide');
+    $('cfgApi').value = store.get(K.api) || '';
+    $('cfgToken').value = store.get(K.token) || '';
+    $('cfgErr').textContent = msg || '';
+  }
+
+  async function carregar() {
+    const api = store.get(K.api), token = store.get(K.token);
+    if (!api || !token) return mostrarConfig();
+
+    const cache = store.get(K.cache);
+    if (cache && !dados) { try { dados = JSON.parse(cache); render(); } catch {} }
+
+    $('upd').textContent = 'Atualizando…';
+    try {
+      const r = await fetch(api + (api.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token));
+      const j = await r.json();
+      if (j.erro) return mostrarConfig('Token inválido. Confira o TOKEN no Apps Script.');
+      dados = j;
+      store.set(K.cache, JSON.stringify(j));
+      render();
+    } catch (e) {
+      if (!dados) return mostrarConfig('Não consegui acessar a API. Confira a URL e se o App da Web está como "Qualquer pessoa".');
+      $('upd').textContent = 'Sem conexão — mostrando últimos dados salvos';
+    }
+  }
+
+  function render() {
+    $('cfg').classList.add('hide');
+    $('app').classList.remove('hide');
+
+    const y = ref.getFullYear(), m = ref.getMonth();
+    const prefixo = `${y}-${pad(m + 1)}`;
+    const rot = ref.toLocaleDateString('pt-BR', { month: 'short', year: 'numeric' }).replace('.', '').replace(' de ', ' ');
+    $('mesLabel').textContent = rot.charAt(0).toUpperCase() + rot.slice(1);
+
+    const lanc = (dados.lancamentos || []).filter(l => l.data.startsWith(prefixo));
+    const tetos = dados.tetos || [];
+    const tetoDe = Object.fromEntries(tetos.map(t => [t.categoria, t.teto]));
+
+    const diasMes = new Date(y, m + 1, 0).getDate();
+    const ehAtual = y === hoje.getFullYear() && m === hoje.getMonth();
+    const ehFuturo = ref > hoje;
+    const diaRef = ehAtual ? hoje.getDate() : (ehFuturo ? 0 : diasMes);
+
+    const total = lanc.reduce((s, l) => s + l.valor, 0);
+    const tetoTotal = tetos.reduce((s, t) => s + (t.teto || 0), 0);
+    const proj = ehAtual && diaRef > 0 ? total / diaRef * diasMes : total;
+    const mediaDia = diaRef > 0 ? total / diaRef : 0;
+
+    // KPIs
+    $('kGasto').textContent = brl(total);
+    $('kGastoSub').textContent = `${lanc.length} lançamento${lanc.length === 1 ? '' : 's'}`;
+    $('kTeto').textContent = tetoTotal ? brl(tetoTotal) : '—';
+    $('kTetoSub').innerHTML = tetoTotal ? statusTxt(total / tetoTotal, 'usado') : 'Defina na aba Tetos';
+    $('kProj').textContent = brl(proj);
+    $('kProjSub').innerHTML = !ehAtual ? 'mês fechado' : tetoTotal
+      ? (proj > tetoTotal ? `<span class="bad">${brl(proj - tetoTotal)} acima do teto</span>` : `<span class="ok">${brl(tetoTotal - proj)} de folga</span>`)
+      : 'no ritmo atual';
+    $('kDia').textContent = brl(mediaDia);
+    $('kDiaSub').textContent = ehAtual && tetoTotal
+      ? `pode gastar ${brl(Math.max(0, (tetoTotal - total) / Math.max(1, diasMes - diaRef + 1)))}/dia`
+      : `em ${diaRef} dia${diaRef === 1 ? '' : 's'}`;
+
+    // Por categoria
+    const porCat = {};
+    lanc.forEach(l => porCat[l.categoria] = (porCat[l.categoria] || 0) + l.valor);
+    const nomes = [...new Set([...tetos.map(t => t.categoria), ...Object.keys(porCat)])];
+    const linhas = nomes.map(c => ({ c, g: porCat[c] || 0, t: tetoDe[c] || 0 }))
+      .filter(x => x.g > 0 || x.t > 0)
+      .sort((a, b) => (b.t ? b.g / b.t : 0) - (a.t ? a.g / a.t : 0) || b.g - a.g);
+    const maxG = Math.max(1, ...linhas.map(x => x.g));
+
+    $('cats').innerHTML = linhas.length ? linhas.map(x => {
+      const r = x.t ? x.g / x.t : null;
+      const w = r !== null ? Math.min(r, 1) * 100 : x.g / maxG * 100;
+      const cor = r === null ? 'var(--acc)' : r > 1 ? 'var(--bad)' : r >= .8 ? 'var(--warn)' : 'var(--ok)';
+      const dir = x.t ? `${brl(x.g)} / ${brl(x.t)} · <span class="${cls(r)}">${pct(r)}</span>` : `${brl(x.g)} · sem teto`;
+      return `<div class="cat"><div class="top"><span>${esc(x.c)}</span><span>${dir}</span></div>
+              <div class="bar"><i style="width:${w}%;background:${cor}"></i></div></div>`;
+    }).join('') : '<div class="empty">Nenhum gasto neste mês.</div>';
+
+    // Alertas
+    const estouradas = linhas.filter(x => x.t && x.g > x.t);
+    const quase = linhas.filter(x => x.t && x.g <= x.t && x.g / x.t >= .8);
+    let al = '';
+    if (estouradas.length) al += `<div class="alert bad">🚨 Acima do teto: <b>${estouradas.map(x => esc(x.c)).join(', ')}</b></div>`;
+    if (quase.length) al += `<div class="alert warn">⚠️ Acima de 80% do teto: <b>${quase.map(x => esc(x.c)).join(', ')}</b></div>`;
+    $('alertas').innerHTML = al;
+
+    // Formas de pagamento
+    const porForma = {};
+    lanc.forEach(l => porForma[l.forma || '—'] = (porForma[l.forma || '—'] || 0) + l.valor);
+    const fs = Object.entries(porForma).sort((a, b) => b[1] - a[1]);
+    $('formas').innerHTML = fs.length ? fs.map(([f, v]) =>
+      `<div class="row"><div class="l">${esc(f)}</div><b>${brl(v)} <small style="color:var(--mut);font-weight:400">${pct(v / total)}</small></b></div>`
+    ).join('') : '<div class="empty">—</div>';
+
+    // Ritmo (gasto acumulado x ritmo ideal)
+    $('ritmo').innerHTML = graficoRitmo(lanc, diasMes, diaRef, tetoTotal);
+    $('ritmoSub').textContent = ehAtual ? `dia ${diaRef} de ${diasMes}` : '';
+
+    // Últimos
+    const ult = [...lanc].sort((a, b) => b.data.localeCompare(a.data)).slice(0, 15);
+    $('qtd').textContent = lanc.length > 15 ? `15 de ${lanc.length}` : '';
+    $('ultimos').innerHTML = ult.length ? ult.map(l => {
+      const [, mm, dd] = l.data.split('-');
+      const desc = l.descricao ? esc(l.descricao) : esc(l.categoria);
+      return `<div class="row"><div class="l"><div>${desc}</div>
+              <small>${dd}/${mm} · ${esc(l.categoria)} · ${esc(l.forma)}</small></div><b>${brl(l.valor)}</b></div>`;
+    }).join('') : '<div class="empty">Nenhum lançamento.</div>';
+
+    const at = dados.atualizado ? new Date(dados.atualizado) : null;
+    $('upd').textContent = at ? 'Atualizado ' + at.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+  }
+
+  function graficoRitmo(lanc, diasMes, diaRef, tetoTotal) {
+    const W = 600, H = 170, P = { l: 44, r: 10, t: 10, b: 22 };
+    const porDia = Array(diasMes + 1).fill(0);
+    lanc.forEach(l => { const d = +l.data.slice(8, 10); if (d >= 1 && d <= diasMes) porDia[d] += l.valor; });
+    const acum = []; let s = 0;
+    for (let d = 1; d <= diasMes; d++) { s += porDia[d]; acum.push(s); }
+    const ateHoje = acum.slice(0, Math.max(diaRef, 0));
+    const maxY = Math.max(tetoTotal, ...ateHoje, 1) * 1.08;
+    const x = d => P.l + (d - 1) / Math.max(1, diasMes - 1) * (W - P.l - P.r);
+    const yv = v => H - P.b - v / maxY * (H - P.t - P.b);
+
+    let g = '';
+    [0, .5, 1].forEach(f => {
+      const v = maxY / 1.08 * f, yy = yv(v);
+      g += `<line x1="${P.l}" x2="${W - P.r}" y1="${yy}" y2="${yy}" stroke="var(--line)"/>`;
+      g += `<text x="${P.l - 6}" y="${yy + 3}" text-anchor="end">${v >= 1000 ? (v / 1000).toFixed(1).replace('.', ',') + 'k' : Math.round(v)}</text>`;
+    });
+    [1, 10, 20, diasMes].forEach(d => g += `<text x="${x(d)}" y="${H - 6}" text-anchor="middle">${d}</text>`);
+    if (tetoTotal) g += `<line x1="${x(1)}" y1="${yv(tetoTotal / diasMes)}" x2="${x(diasMes)}" y2="${yv(tetoTotal)}" stroke="var(--mut)" stroke-dasharray="4 4" stroke-width="1.5"/>`;
+    if (ateHoje.length) {
+      const pts = ateHoje.map((v, i) => `${x(i + 1)},${yv(v)}`).join(' ');
+      g += `<polyline points="${pts}" fill="none" stroke="var(--acc)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+      const lastI = ateHoje.length;
+      g += `<circle cx="${x(lastI)}" cy="${yv(ateHoje[lastI - 1])}" r="4" fill="var(--acc)"/>`;
+    }
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Gasto acumulado no mês">${g}</svg>`;
+  }
+
+  const cls = r => r > 1 ? 'bad' : r >= .8 ? 'warn' : 'ok';
+  const statusTxt = (r, sufixo) => `<span class="${cls(r)}">${pct(r)} ${sufixo}</span>`;
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  // Eventos
+  $('prev').onclick = () => { ref = new Date(ref.getFullYear(), ref.getMonth() - 1, 1); if (dados) render(); };
+  $('next').onclick = () => { ref = new Date(ref.getFullYear(), ref.getMonth() + 1, 1); if (dados) render(); };
+  $('reload').onclick = carregar;
+  $('reset').onclick = () => { [K.api, K.token, K.cache].forEach(store.del); dados = null; mostrarConfig(); };
+  $('cfgSave').onclick = () => {
+    const api = $('cfgApi').value.trim(), token = $('cfgToken').value.trim();
+    if (!api.startsWith('https://') || !token) { $('cfgErr').textContent = 'Preencha a URL (https://…/exec) e o token.'; return; }
+    store.set(K.api, api); store.set(K.token, token); store.del(K.cache); dados = null;
+    carregar();
+  };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && store.get(K.api)) carregar(); });
+
+  carregar();
+})();
+</script>
+</body>
+</html>

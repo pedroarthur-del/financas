@@ -23,6 +23,55 @@
   const ls = { get: k => ler(localStorage, k, false), set: (k, v) => guardar(localStorage, k, v) };
   const raiz = () => $('#raiz');
 
+  /* ----------------------------- movimento -----------------------------
+     Uma entrada orquestrada por tela; depois disso só se anima o que mudou.
+     Só transform/opacity/stroke; nada roda com prefers-reduced-motion. */
+  const reduzMov = window.matchMedia ? matchMedia('(prefers-reduced-motion: reduce)') : { matches: false };
+  const movOk = () => !reduzMov.matches;
+  const suave = t => 1 - Math.pow(1 - t, 4); // ease-out quart: chega rápido, assenta devagar
+  function tween(de, para, dur, cada, fim) {
+    if (!movOk() || de === para) { cada(para); if (fim) fim(); return; }
+    const t0 = performance.now();
+    const passo = agora => {
+      const t = Math.min(1, (agora - t0) / dur);
+      cada(de + (para - de) * suave(t));
+      if (t < 1) requestAnimationFrame(passo); else if (fim) fim();
+    };
+    requestAnimationFrame(passo);
+  }
+  function partesFace(x) {
+    const [i, c] = Math.abs(x).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).split(',');
+    return `<span class="rs" aria-hidden="true">R$</span><span aria-hidden="true">${x < 0 ? '−' : ''}${i}</span><span class="cent" aria-hidden="true">,${c}</span>`;
+  }
+  /** Contadores: primeira vez sobem do zero; depois rolam do valor anterior (troca de mês, atualização ao vivo). */
+  function animarValores(entrada) {
+    $$('[data-contar]').forEach(el => {
+      const k = el.dataset.contar, alvo = Number(el.dataset.valor) || 0, ant = E.vistos.get(k);
+      E.vistos.set(k, alvo);
+      const de = ant !== undefined ? ant : entrada ? 0 : alvo;
+      if (Math.abs(de - alvo) < 0.005) return;
+      const face = el.classList.contains('face');
+      if (ant !== undefined) { el.classList.remove('mudou'); void el.offsetWidth; el.classList.add('mudou'); }
+      tween(de, alvo, ant !== undefined ? 650 : 1100, x => { if (face) el.innerHTML = partesFace(x); else el.textContent = brl(x); });
+    });
+  }
+  /** Indicador deslizante das abas: lembra a posição anterior para deslizar até a nova. */
+  function posicionarIndicador(abas) {
+    if (!abas) return;
+    let ind = abas.querySelector('.indicador');
+    if (!ind) { ind = document.createElement('span'); ind.className = 'indicador'; ind.setAttribute('aria-hidden', 'true'); abas.prepend(ind); }
+    const sel = abas.querySelector('[aria-selected="true"]'); if (!sel) return;
+    const id = abas.dataset.grupo || 'abas', ant = E.indicador[id];
+    const alvo = { x: sel.offsetLeft, w: sel.offsetWidth };
+    const aplicar = r => { ind.style.width = r.w + 'px'; ind.style.transform = `translateX(${r.x}px)`; };
+    if (ant && movOk() && (ant.x !== alvo.x || ant.w !== alvo.w)) {
+      ind.classList.add('sem-transicao'); aplicar(ant); void ind.offsetWidth; ind.classList.remove('sem-transicao');
+      requestAnimationFrame(() => aplicar(alvo));
+    } else { ind.classList.add('sem-transicao'); aplicar(alvo); requestAnimationFrame(() => ind.classList.remove('sem-transicao')); }
+    E.indicador[id] = alvo;
+    abas.classList.add('com-indicador');
+  }
+
   const ICONE = {
     olho: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
     sair: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h11"/></svg>',
@@ -50,17 +99,22 @@
   const roseta = (compacta) => compacta
     ? anel(118, 26, 10, 6, 240) + anel(70, 18, 7, 4, 200)
     : anel(122, 22, 14, 9) + anel(84, 16, 10, 7) + anel(56, 7, 18, 4);
-  function faixa(larg = 1000, alt = 26) {
-    let out = '';
-    for (let k = 0; k < 6; k++) {
-      let p = '';
-      for (let x = 0; x <= larg; x += 4) {
-        const y = alt / 2 + Math.sin(x / 22 + k * .55) * (alt * .28) + Math.sin(x / 61 - k * .9) * (alt * .14);
-        p += (p ? 'L' : 'M') + x + ' ' + y.toFixed(2);
+  function faixa(alt = 26) {
+    // ondas periódicas em 1000 unidades: desenhadas em 2000 e deslocadas -1000 em loop sem emenda
+    const linhas = sentido => {
+      let out = '';
+      for (let k = 0; k < 3; k++) {
+        const j = sentido > 0 ? k * 2 : k * 2 + 1;
+        let p = '';
+        for (let x = 0; x <= 2000; x += 5) {
+          const y = alt / 2 + Math.sin(2 * Math.PI * (x * 9 / 1000) + j * .55) * (alt * .28) + Math.sin(2 * Math.PI * (x * 3 / 1000) - j * .9) * (alt * .14);
+          p += (p ? 'L' : 'M') + x + ' ' + y.toFixed(2);
+        }
+        out += `<path d="${p}"/>`;
       }
-      out += `<path d="${p}"/>`;
-    }
-    return `<svg class="faixa" viewBox="0 0 ${larg} ${alt}" preserveAspectRatio="none" aria-hidden="true">${out}</svg>`;
+      return `<g class="deriva${sentido < 0 ? ' contra' : ''}">${out}</g>`;
+    };
+    return `<svg class="faixa" viewBox="0 0 1000 ${alt}" preserveAspectRatio="none" aria-hidden="true">${linhas(1)}${linhas(-1)}</svg>`;
   }
 
   /* ------------------------------- api ------------------------------ */
@@ -148,7 +202,9 @@
     const s = Sessao.atual();
     Sessao.limpar();
     Ociosidade.parar();
+    clearInterval(timerVivo);
     E.dados = null;
+    E.vistos.clear(); E.vistas.clear(); E.lancVistos = null;
     if (s?.token) api('sair', { token: s.token }).catch(() => { });
     telaAcesso('entrar', msg ? { tipo: 'info', texto: msg } : null);
   }
@@ -161,6 +217,11 @@
     ref: new Date(hoje.getFullYear(), hoje.getMonth(), 1),
     privado: ls.get(K.privado) === '1',
     aba: 'painel',
+    vistos: new Map(),      // último valor mostrado por contador
+    vistas: new Set(),      // telas que já tiveram a entrada animada
+    indicador: {},          // posição anterior das abas
+    lancVistos: null,       // lançamentos já mostrados (para destacar os novos)
+    dir: 0,
     redefinirEmail: ''
   };
 
@@ -229,7 +290,7 @@
           ${semApi ? '<div class="aviso-config">Falta conectar a planilha. Cole a URL do App da Web (termina em <code>/exec</code>) no arquivo <code>config.js</code> do repositório.</div>' : ''}
           <h1>${titulo}</h1>
           <p class="apoio">${apoio}</p>
-          ${mostrarAbas ? `<div class="abas" role="tablist" aria-label="Acesso">
+          ${mostrarAbas ? `<div class="abas" data-grupo="acesso" role="tablist" aria-label="Acesso">
             <button type="button" role="tab" data-modo="entrar" aria-selected="${modo === 'entrar'}">Entrar</button>
             <button type="button" role="tab" data-modo="criar" aria-selected="${modo === 'criar'}">Criar conta</button>
           </div>` : '<div class="espaco"></div>'}
@@ -239,6 +300,7 @@
       </main>`;
 
     if (msg) mostrarMsg(msg.texto, msg.tipo);
+    posicionarIndicador($('[data-grupo="acesso"]'));
 
     $$('[data-modo]').forEach(b => b.onclick = () => telaAcesso(b.dataset.modo));
     $$('[data-acao="ver"]').forEach(b => b.onclick = () => {
@@ -449,7 +511,7 @@
             <h2 id="mes-nome"></h2>
             <button class="ico" id="b-prox" type="button" aria-label="Próximo mês">${ICONE.prox}</button>
           </nav>
-          <div class="abas abas-painel" role="tablist" aria-label="Seções">
+          <div class="abas abas-painel" data-grupo="painel" role="tablist" aria-label="Seções">
             <button type="button" role="tab" data-aba="painel" aria-selected="${E.aba === 'painel'}">Painel</button>
             <button type="button" role="tab" data-aba="fluxo" aria-selected="${E.aba === 'fluxo'}">Fluxo</button>
             <button type="button" role="tab" data-aba="cadastros" aria-selected="${E.aba === 'cadastros'}">Cadastros</button>
@@ -457,7 +519,7 @@
         </div>
         <div id="conteudo"><p class="carregando">Buscando seus lançamentos, ${esc(s?.nome || '')}…</p></div>
         <footer class="rodape">
-          <span id="atualizado"></span>
+          <span class="ao-vivo"><i aria-hidden="true"></i><span id="atualizado"></span></span>
           <button class="btn secundario" id="b-atualizar" type="button">Atualizar</button>
         </footer>
       </div>`;
@@ -472,35 +534,69 @@
     $('#b-prox').onclick = () => mudarMes(1);
     $('#b-atualizar').onclick = carregarDados;
     $$('[data-aba]').forEach(b => b.onclick = () => irPara(b.dataset.aba));
+    posicionarIndicador($('.abas-painel'));
     if (E.dados) renderConteudo();
+    vivo();
   }
 
   function irPara(aba) {
-    E.aba = aba;
+    if (aba === E.aba) return;
+    E.aba = aba; E.troca = 'aba';
     $$('[data-aba]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.aba === aba)));
+    posicionarIndicador($('.abas-painel'));
     renderConteudo();
-    scrollTo({ top: 0 });
+    scrollTo({ top: 0, behavior: movOk() ? 'smooth' : 'auto' });
   }
 
   function mudarMes(delta) {
     E.ref = new Date(E.ref.getFullYear(), E.ref.getMonth() + delta, 1);
-    $('#mes-nome').textContent = nomeMes(E.ref);
+    E.troca = delta > 0 ? 'frente' : 'tras'; E.trocouMes = true;
+    const h = $('#mes-nome');
+    h.textContent = nomeMes(E.ref);
+    if (movOk()) { h.classList.remove('vira-frente', 'vira-tras'); void h.offsetWidth; h.classList.add(delta > 0 ? 'vira-frente' : 'vira-tras'); }
     if (E.dados) renderConteudo();
+  }
+
+  /** Destaca lançamentos que chegaram desde a última vez que a tela foi desenhada. */
+  function marcarNovos() {
+    const chaveL = l => `${l.data}|${l.valor}|${l.categoria}|${l.descricao}`;
+    const atuais = new Set((E.dados.lancamentos || []).map(chaveL));
+    if (E.lancVistos) $$('[data-lanc]').forEach(el => { if (!E.lancVistos.has(el.dataset.lanc)) el.classList.add('novo'); });
+    E.lancVistos = atuais;
   }
 
   function renderConteudo() {
     if (!E.dados || !$('#conteudo')) return;
+    const box = $('#conteudo');
+    const chaveTela = `${E.aba}|${chaveMes(E.ref)}`;
+    const entrada = movOk() && !E.vistas.has(chaveTela);
+    E.vistas.add(chaveTela);
     if (E.aba === 'cadastros') renderCadastros(); else if (E.aba === 'fluxo') renderFluxo(); else renderPainel();
     $$('[data-largura]').forEach(el => { el.style.width = el.dataset.largura + '%'; });  // CSSOM: a CSP bloqueia style=""
     $$('[data-inicio]').forEach(el => { el.style.left = el.dataset.inicio + '%'; });
+
+    // coreografia: troca de aba/mês desliza no sentido do tempo; a primeira visita cresce barras e desenha linhas
+    box.classList.remove('entrada', 'troca-aba', 'troca-frente', 'troca-tras');
+    void box.offsetWidth;
+    if (movOk() && E.troca) box.classList.add('troca-' + E.troca);
+    if (entrada) {
+      box.classList.add('entrada');
+      $$('.trilho, .medidor, .h-barras', box).forEach((el, i) => el.style.setProperty('--i', Math.min(i, 14)));
+      revelarAoRolar(box);
+    }
+    E.troca = null;
+    if (E.grafico) E.grafico(entrada || !!E.trocouMes);
+    E.trocouMes = false;
+    animarValores(entrada);
+    marcarNovos();
     const at = E.dados.atualizado ? new Date(E.dados.atualizado) : null;
     if ($('#atualizado')) $('#atualizado').textContent = at ? `Atualizado às ${pad(at.getHours())}:${pad(at.getMinutes())} de ${pad(at.getDate())}/${pad(at.getMonth() + 1)}` : '';
   }
 
   function valorDeFace(v, excesso) {
-    const [i, c] = Math.abs(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).split(',');
-    return `<p class="face num${excesso ? ' excesso' : ''}" aria-label="${brl(v)}"><span class="rs" aria-hidden="true">R$</span><span aria-hidden="true">${i}</span><span class="cent" aria-hidden="true">,${c}</span></p>`;
+    return `<p class="face num${excesso ? ' excesso' : ''}" aria-label="${brl(v)}" data-contar="face-${E.aba}" data-valor="${(+v || 0).toFixed(2)}">${partesFace(+v || 0)}</p>`;
   }
+  const vc = (x, k) => `<b class="valor num" data-contar="${k}" data-valor="${(+x || 0).toFixed(2)}">${brl(x)}</b>`;
   const v = x => `<b class="valor num">${brl(x)}</b>`;
   const w = (x, escala) => (escala > 0 ? Math.max(0, Math.min(100, x / escala * 100)) : 0).toFixed(1);
 
@@ -572,10 +668,10 @@
           ${gastoRef > R.total ? `<b class="m-marco" data-inicio="${w(R.total, escala)}" title="Renda do mês"></b>` : ''}
         </div>
         <dl class="numeros">
-          <div><dt>Renda</dt><dd>${v(R.total)}</dd><small>Fixo <span class="valor">${brl(R.fixo)}</span>${R.variavel ? `, variável <span class="valor">${brl(R.variavel)}</span>` : ''}</small></div>
-          <div><dt>Gasto ${atual ? 'até agora' : 'no mês'}</dt><dd>${v(total)}</dd><small>${pct(total / R.total)} da renda</small></div>
-          ${atual ? `<div><dt>Gasto previsto</dt><dd>${v(proj)}</dd><small>${pct(proj / R.total)} da renda</small></div>` : ''}
-          <div><dt>${atual ? 'Sobra prevista' : 'Sobrou'}</dt><dd class="${sobra < 0 ? 'excesso' : 'folga'}">${v(sobra)}</dd><small>${sobra < 0 ? 'faltou dinheiro' : pct(sobra / R.total) + ' da renda'}</small></div>
+          <div><dt>Renda</dt><dd>${vc(R.total, 'bal-renda')}</dd><small>Fixo <span class="valor">${brl(R.fixo)}</span>${R.variavel ? `, variável <span class="valor">${brl(R.variavel)}</span>` : ''}</small></div>
+          <div><dt>Gasto ${atual ? 'até agora' : 'no mês'}</dt><dd>${vc(total, 'bal-gasto')}</dd><small>${pct(total / R.total)} da renda</small></div>
+          ${atual ? `<div><dt>Gasto previsto</dt><dd>${vc(proj, 'bal-prev')}</dd><small>${pct(proj / R.total)} da renda</small></div>` : ''}
+          <div><dt>${atual ? 'Sobra prevista' : 'Sobrou'}</dt><dd class="${sobra < 0 ? 'excesso' : 'folga'}">${vc(sobra, 'bal-sobra')}</dd><small>${sobra < 0 ? 'faltou dinheiro' : pct(sobra / R.total) + ' da renda'}</small></div>
         </dl>
         <p class="legenda-medidor"><span class="lg-gasto">Gasto</span>${atual ? '<span class="lg-prev">Previsto até o fim do mês</span>' : ''}</p>`;
     }
@@ -647,7 +743,7 @@
     const ult = [...lanc].sort((a, b) => String(b.data).localeCompare(String(a.data))).slice(0, 10);
     const htmlUlt = ult.length ? ult.map(l => {
       const [, mm, dd] = String(l.data).split('-');
-      return `<div class="linha"><div class="esq"><div>${esc(l.descricao || l.categoria)}</div>
+      return `<div class="linha" data-lanc="${esc(`${l.data}|${l.valor}|${l.categoria}|${l.descricao}`)}"><div class="esq"><div>${esc(l.descricao || l.categoria)}</div>
         <small>${dd}/${mm}, ${esc(l.categoria)}, ${esc(l.forma)}</small></div><div class="dir"><span class="valor num">${brl(l.valor)}</span></div></div>`;
     }).join('') : '<p class="vazio">Sem lançamentos.</p>';
 
@@ -706,8 +802,7 @@
       </section>`;
 
     $$('[data-aba-ir]').forEach(b => b.onclick = () => irPara(b.dataset.abaIr));
-    E.grafico = futuro ? null : () => { const box = $('#ritmo-svg'); if (box) box.innerHTML = graficoRitmo(lanc, diasMes, dia, teto, box.clientWidth); };
-    if (E.grafico) E.grafico();
+    E.grafico = futuro ? null : anim => { const box = $('#ritmo-svg'); if (box) { box.innerHTML = graficoRitmo(lanc, diasMes, dia, teto, box.clientWidth); if (anim && movOk()) box.firstElementChild.classList.add('desenhar'); } };
   }
 
   /* ---------------------- fluxo de caixa (cálculo) ---------------------- */
@@ -878,8 +973,7 @@
       </section>`;
 
     $$('[data-aba-ir]').forEach(b => b.onclick = () => irPara(b.dataset.abaIr));
-    E.grafico = () => { const box = $('#ritmo-svg'); if (box) box.innerHTML = graficoSaldo(F.dias, box.clientWidth); };
-    E.grafico();
+    E.grafico = anim => { const box = $('#ritmo-svg'); if (box) { box.innerHTML = graficoSaldo(F.dias, box.clientWidth); if (anim && movOk()) box.firstElementChild.classList.add('desenhar'); } };
     const hj = $('.fd.hoje'); if (hj && hj.tagName === 'DETAILS') hj.open = true;
   }
 
@@ -900,12 +994,13 @@
     [0, 9, 19, n - 1].forEach(i => { g += `<text class="eixo" x="${x(i)}" y="${H - 5}" text-anchor="middle">${i + 1}</text>`; });
     const iHoje = dias.findIndex(d => d.futuro);
     const corte = iHoje === -1 ? n - 1 : Math.max(0, iHoje - 1);
-    const pts = (a, b) => dias.slice(a, b + 1).map((d, j) => `${x(a + j).toFixed(1)},${yv(d.saldo).toFixed(1)}`).join(' ');
-    if (dias[0].futuro) g += `<polyline class="ideal" points="${pts(0, n - 1)}"/>`;
+    const pts = (a, b) => dias.slice(a, b + 1).map((d, j) => `${j ? 'L' : 'M'}${x(a + j).toFixed(1)} ${yv(d.saldo).toFixed(1)}`).join('');
+    if (dias[0].futuro) g += `<path class="ideal" d="${pts(0, n - 1)}"/>`;
     else {
-      g += `<polyline class="real" points="${pts(0, corte)}"/>`;
-      if (corte < n - 1) g += `<polyline class="ideal" points="${pts(corte, n - 1)}"/>`;
-      g += `<circle class="ponto${dias[corte].saldo < 0 ? ' excesso' : ''}" cx="${x(corte)}" cy="${yv(dias[corte].saldo)}" r="4.5"/>`;
+      g += `<path class="real" pathLength="1" d="${pts(0, corte)}"/>`;
+      if (corte < n - 1) g += `<path class="ideal tarde" d="${pts(corte, n - 1)}"/>`;
+      const neg = dias[corte].saldo < 0 ? ' excesso' : '';
+      g += `<circle class="pulso${neg}" cx="${x(corte)}" cy="${yv(dias[corte].saldo)}" r="4.5"/><circle class="ponto${neg}" cx="${x(corte)}" cy="${yv(dias[corte].saldo)}" r="4.5"/>`;
     }
     dias.forEach((d, i) => { if (d.ent > 0) g += `<circle class="marco-ent" cx="${x(i)}" cy="${yv(d.saldo)}" r="3"/>`; });
     return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Saldo da conta dia a dia">${g}</svg>`;
@@ -1088,11 +1183,11 @@
       g += `<line class="grade" x1="${P.e}" x2="${W - P.d}" y1="${yy}" y2="${yy}"/><text class="eixo" x="${P.e - 8}" y="${+yy + 4}" text-anchor="end">${curto(val)}</text>`;
     });
     [1, 10, 20, diasMes].forEach(d => { g += `<text class="eixo" x="${x(d)}" y="${H - 5}" text-anchor="middle">${d}</text>`; });
-    if (teto) g += `<line class="ideal" x1="${x(1)}" y1="${yv(teto / diasMes)}" x2="${x(diasMes)}" y2="${yv(teto)}"/>`;
+    if (teto) g += `<path class="ideal guia" d="M${x(1)} ${yv(teto / diasMes)}L${x(diasMes)} ${yv(teto)}"/>`;
     if (ate.length) {
-      const acima = teto && ate[ate.length - 1] > teto / diasMes * ate.length;
-      g += `<polyline class="real${acima ? ' excesso' : ''}" points="${ate.map((val, i) => `${x(i + 1).toFixed(1)},${yv(val).toFixed(1)}`).join(' ')}"/>`;
-      g += `<circle class="ponto${acima ? ' excesso' : ''}" cx="${x(ate.length)}" cy="${yv(ate[ate.length - 1])}" r="4.5"/>`;
+      const acima = teto && ate[ate.length - 1] > teto / diasMes * ate.length ? ' excesso' : '';
+      g += `<path class="real${acima}" pathLength="1" d="${ate.map((val, i) => `${i ? 'L' : 'M'}${x(i + 1).toFixed(1)} ${yv(val).toFixed(1)}`).join('')}"/>`;
+      g += `<circle class="pulso${acima}" cx="${x(ate.length)}" cy="${yv(ate[ate.length - 1])}" r="4.5"/><circle class="ponto${acima}" cx="${x(ate.length)}" cy="${yv(ate[ate.length - 1])}" r="4.5"/>`;
     }
     return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Gasto acumulado dia a dia comparado ao ritmo do teto">${g}</svg>`;
   }
@@ -1104,8 +1199,23 @@
     if (Sessao.atual()) carregarDados();
   });
 
+  /** Seções abaixo da dobra só começam a animar quando entram na tela. */
+  function revelarAoRolar(box) {
+    const alvos = $$('.secao', box);
+    if (!('IntersectionObserver' in window)) return;
+    const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('em-cena'); io.unobserve(e.target); } }), { rootMargin: '0px 0px -8% 0px' });
+    alvos.forEach(el => { el.classList.add('aguarda'); io.observe(el); });
+  }
+
+  /** Atualização ao vivo: a cada 2 min com a tela aberta; os números que mudaram rolam até o novo valor. */
+  let timerVivo;
+  function vivo() {
+    clearInterval(timerVivo);
+    timerVivo = setInterval(() => { if (!document.hidden && Sessao.atual() && E.aba !== 'cadastros') carregarDados(); }, 120000);
+  }
+
   let redim;
-  addEventListener('resize', () => { clearTimeout(redim); redim = setTimeout(() => E.grafico && E.grafico(), 150); });
+  addEventListener('resize', () => { clearTimeout(redim); redim = setTimeout(() => { if (E.grafico) E.grafico(false); posicionarIndicador($('.abas-painel')); }, 150); });
 
   async function iniciar() {
     if (Sessao.atual()) { Ociosidade.iniciar(); telaPainel(); carregarDados(); return; }

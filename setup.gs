@@ -46,7 +46,7 @@ const SEG = {
   aparelhoDias: 60       // "lembrar de mim": dias sem precisar da senha (renova a cada uso)
 };
 
-const VERSAO = '2.5.0';
+const VERSAO = '2.6.0';
 
 const ABA = { respostas: 'Respostas', lanc: 'Lançamentos', tetos: 'Tetos', resumo: 'Resumo', links: 'Links', receitas: 'Receitas', contas: 'Contas fixas' };
 
@@ -526,8 +526,8 @@ const Aparelho = {
 const Lancamentos = {
   aba() {
     const a = Dados.planilha().getSheetByName(ABA.lanc);
-    if (a.getRange(1, 9).getValue() !== 'Cartão') {
-      a.getRange(1, 7, 1, 3).setValues([['Lançado em', 'ID', 'Cartão']]).setFontWeight('bold').setBackground('#E8EAF6');
+    if (a.getRange(1, 10).getValue() !== 'Pontual') {
+      a.getRange(1, 7, 1, 4).setValues([['Lançado em', 'ID', 'Cartão', 'Pontual']]).setFontWeight('bold').setBackground('#E8EAF6');
       a.getRange('H:I').setNumberFormat('@');
     }
     return a;
@@ -535,7 +535,7 @@ const Lancamentos = {
   validar(c) {
     const data = V.data(c.data), valor = V.valor(c.valor), categoria = V.categoria(c.categoria), forma = V.forma(c.forma);
     const [y, m, d] = data.split('-').map(Number);
-    return { data: new Date(y, m - 1, d, 12), valor, categoria, forma, descricao: V.texto(c.descricao, 200), cartao: Ajustes.cartaoValido(forma, c.cartao) };
+    return { data: new Date(y, m - 1, d, 12), valor, categoria, forma, descricao: V.texto(c.descricao, 200), cartao: Ajustes.cartaoValido(forma, c.cartao), pontual: c.pontual === true ? 'Sim' : '' };
   },
   linhaDe(a, id) {
     if (!/^[a-f0-9]{12}$/.test(String(id || ''))) throw new ApiErro('id_invalido', 'Gasto não encontrado.');
@@ -545,14 +545,14 @@ const Lancamentos = {
   },
   criar(c) {
     const l = this.validar(c);
-    comTrava_(() => this.aba().appendRow([l.data, l.valor, l.categoria, l.forma, l.descricao, 'App', new Date(), aleatorio_().slice(0, 12), l.cartao]));
+    comTrava_(() => this.aba().appendRow([l.data, l.valor, l.categoria, l.forma, l.descricao, 'App', new Date(), aleatorio_().slice(0, 12), l.cartao, l.pontual]));
   },
   editar(c) {
     const l = this.validar(c);
     comTrava_(() => {
       const a = this.aba(), linha = this.linhaDe(a, c.id);
       a.getRange(linha, 1, 1, 5).setValues([[l.data, l.valor, l.categoria, l.forma, l.descricao]]);
-      a.getRange(linha, 9).setNumberFormat('@').setValue(l.cartao);
+      a.getRange(linha, 9, 1, 2).setNumberFormat('@').setValues([[l.cartao, l.pontual]]);
     });
   },
   remover(c) {
@@ -726,6 +726,9 @@ const Ajustes = {
     if (c.saldo !== undefined) {
       a.saldo = c.saldo === null ? null : { valor: V.saldo(c.saldo.valor), data: V.data(c.saldo.data), em: new Date().toISOString() };
     }
+    if (c.diaADia !== undefined) { // gasto do dia a dia: null = automático; valor = fixo por dia
+      a.diaADia = c.diaADia === null ? null : { valor: V.valor(c.diaADia.valor) };
+    }
     Store.set('AJUSTES', a);
   }
 };
@@ -744,7 +747,7 @@ const Dados = {
     const ss = this.planilha();
     const abaL = Lancamentos.aba();
     const valsL = abaL.getDataRange().getValues();
-    while (valsL[0].length < 9) valsL.forEach(l => l.push(''));
+    while (valsL[0].length < 10) valsL.forEach(l => l.push(''));
     comTrava_(() => Lancamentos.garantirIds(abaL, valsL));
     const lancamentos = valsL.slice(1)
       .filter(l => l[0] !== '' && l[1] !== '')
@@ -757,6 +760,7 @@ const Dados = {
         descricao: String(l[4] || ''),
         origem: String(l[5] || ''),
         cartao: String(l[8] || ''),
+        pontual: String(l[9] || '').toLowerCase() === 'sim',
         criado: l[6] instanceof Date ? l[6].toISOString() : ''
       }));
     const tetos = ss.getSheetByName(ABA.tetos).getDataRange().getValues().slice(1)

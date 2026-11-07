@@ -437,8 +437,21 @@
   // Categorias pagas uma vez no mês: a previsão usa o teto (ou a média), não o ritmo diário
   const FIXAS = ['Moradia', 'Contas fixas', 'Assinaturas', 'Educação'];
   const chaveMes = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
-  const somaMes = (chave, cat, semFixas) => (E.dados?.lancamentos || [])
-    .filter(l => String(l.data).startsWith(chave) && (!cat || l.categoria === cat) && (!semFixas || l.origem !== 'Conta fixa'))
+  /** Limite para um gasto ser "pontual" automaticamente: 4x a mediana dos gastos comuns (mínimo R$ 250). */
+  function limitePontual() {
+    const D = E.dados; if (!D) return Infinity;
+    if (limitePontual.cache && limitePontual.cache.ref === D) return limitePontual.cache.v;
+    const vals = (D.lancamentos || []).filter(l => l.origem !== 'Conta fixa' && !FIXAS.includes(l.categoria) && !l.pontual).map(l => l.valor).sort((a, b) => a - b);
+    const med = vals.length ? vals[Math.floor(vals.length / 2)] : 0;
+    const v = Math.max(250, med * 4);
+    limitePontual.cache = { ref: D, v };
+    return v;
+  }
+  /** Gasto do dia a dia: sem contas fixas, sem gastos pontuais (marcados ou muito acima do comum) e sem datas futuras. */
+  const diaADia = l => l.origem !== 'Conta fixa' && !FIXAS.includes(l.categoria) && !l.pontual && l.valor <= limitePontual() && String(l.data) <= ymdHoje();
+  const ymdHoje = () => `${hoje.getFullYear()}-${pad(hoje.getMonth() + 1)}-${pad(hoje.getDate())}`;
+  const somaMes = (chave, cat, soDiaADia) => (E.dados?.lancamentos || [])
+    .filter(l => String(l.data).startsWith(chave) && (!cat || l.categoria === cat) && (!soDiaADia || diaADia(l)))
     .reduce((s, l) => s + l.valor, 0);
   const mesesAntes = (d, n) => Array.from({ length: n }, (_, i) => new Date(d.getFullYear(), d.getMonth() - 1 - i, 1));
   const temLancamento = chave => (E.dados?.lancamentos || []).some(l => String(l.data).startsWith(chave));
@@ -471,6 +484,11 @@
       return Math.max(gasto, teto || mediaHistorica(E.ref, cat) || 0);
     }
     const gVar = somaMes(chaveMes(E.ref), cat, true);
+    if (E.dados.ajustes?.diaADia) { // valor fixo informado: reparte entre as categorias pelo peso de cada uma no dia a dia
+      const tot = somaMes(chaveMes(E.ref), null, true) || 0;
+      const fatia = tot > 0 ? gVar / tot : 0;
+      return gasto + futuras + E.dados.ajustes.diaADia.valor * fatia * (ctx.diasMes - ctx.dia);
+    }
     const hist = mediaHistorica(E.ref, cat, true);
     const ritmo = gVar / ctx.dia;
     const ritmoHist = hist !== null ? hist / ctx.diasMes : ritmo;
@@ -891,16 +909,19 @@
   const usaCartao = forma => forma === 'Crédito' && cartoes().length > 0;
 
   /** Gasto variável diário estimado (sem contas fixas), misturando o mês atual com o histórico. */
-  function ritmoVariavel() {
+  function explicarEstimativa() {
+    const fixo = E.dados?.ajustes?.diaADia;
     const k = chaveMes(hoje), dia = hoje.getDate();
-    const atualVar = somaMes(k, null, true);
+    const doMes = (E.dados?.lancamentos || []).filter(l => String(l.data).startsWith(k));
+    const base = doMes.filter(diaADia).reduce((s, l) => s + l.valor, 0);
+    const foraPontual = doMes.filter(l => l.origem !== 'Conta fixa' && !diaADia(l));
     const meses = mesesAntes(hoje, 6).map(chaveMes).filter(temLancamento).slice(0, 3);
     const hist = meses.length ? meses.reduce((s, x) => s + somaMes(x, null, true), 0) / meses.length / 30 : null;
-    const ritmo = atualVar / dia;
-    if (hist === null) return ritmo;
-    const peso = Math.min(1, dia / 10);
-    return ritmo * peso + hist * (1 - peso);
+    const ritmo = base / dia, peso = Math.min(1, dia / 10);
+    const auto = hist === null ? ritmo : ritmo * peso + hist * (1 - peso);
+    return { valor: fixo ? fixo.valor : auto, auto, fixo: !!fixo, base, dia, hist, peso, foraPontual };
   }
+  const ritmoVariavel = () => explicarEstimativa().valor;
 
   /** Entradas e saídas por dia entre duas datas (inclusive). */
   function movimentos(ini, fim) {
@@ -1050,6 +1071,7 @@
           <label class="campo"><span>Descrição (opcional)</span><input id="g-desc" type="text" autocomplete="off" maxlength="200" placeholder="Ex.: Almoço com o time" value="${esc(atual?.descricao || '')}"></label>
           <label class="campo"><span>Data</span><input id="g-data" type="date" value="${atual?.data || ymd(hoje)}" max="${ymd(new Date(hoje.getFullYear() + 1, 11, 31))}"></label>
         </div>
+        <label class="lembrar"><input id="g-pontual" type="checkbox"${atual?.pontual ? ' checked' : ''}><span>Gasto pontual: não conta na estimativa do dia a dia</span></label>
         ${atual?.origem === 'Conta fixa' ? '<p class="apoio-secao">Este gasto veio de uma conta fixa. Mudar aqui altera só este mês.</p>' : ''}
         <div class="msg" id="g-msg" role="alert"></div>
         <button class="btn largo" id="g-salvar" type="submit">${atual ? 'Salvar alterações' : 'Salvar gasto'}</button>
@@ -1086,7 +1108,7 @@
       btn.disabled = true; btn.textContent = 'Salvando…';
       const idCartao = fp === 'Crédito' ? $('.chip[data-grupo="cartao"][aria-checked="true"]', d)?.dataset.id || '' : '';
       if (fp === 'Crédito' && cartoes().length && !idCartao) { msg.textContent = 'Escolha em qual cartão foi a compra.'; return; }
-      const corpo = { valor, categoria, forma: fp, data, descricao: $('#g-desc').value.trim(), cartao: idCartao };
+      const corpo = { valor, categoria, forma: fp, data, descricao: $('#g-desc').value.trim(), cartao: idCartao, pontual: $('#g-pontual').checked };
       try {
         if (await gravar(atual ? 'editarLancamento' : 'lancar', atual ? Object.assign({ id: atual.id }, corpo) : corpo)) {
           ls.set(K.forma, fp);
@@ -1156,6 +1178,7 @@
         <h3>Dia a dia <small>toque no dia para ver o que entrou e saiu</small></h3>
         <div class="fd cab"><div class="fd-linha"><span class="fd-dia">Dia</span><span class="fd-ent">Entrou</span><span class="fd-sai">Saiu</span><span class="fd-saldo">Saldo</span></div></div>
         ${htmlDias}
+        ${(() => { const x = explicarEstimativa(); return x.valor > 0 && temFuturo ? `<p class="previsao">Estimativa do dia a dia: ${v(x.valor)} por dia. ${x.fixo ? 'É o valor que você definiu em Cadastros.' : `Vem de ${v(x.base)} em gastos comuns nos ${x.dia} dias deste mês${x.hist !== null && x.peso < 1 ? ', misturado com a média dos meses anteriores' : ''}. Contas fixas, datas futuras e gastos pontuais ficam de fora${x.foraPontual.length ? ` (${x.foraPontual.length} ${x.foraPontual.length === 1 ? 'gasto' : 'gastos'} este mês)` : ''}.`} <button class="link" type="button" data-aba-ir="cadastros">Ajustar</button></p>` : ''; })()}
         <p class="previsao">${cartoes().length ? `Compras no crédito entram no vencimento da fatura de cada cartão (${cartoes().map(c => `${esc(c.nome)} dia ${c.vence}`).join(', ')}).` : 'Compras no crédito entram no dia da compra. Cadastre seus cartões para elas caírem no dia da fatura.'} Os dias que ainda não chegaram usam uma estimativa do seu gasto do dia a dia.</p>
       </section>`;
 
@@ -1313,6 +1336,17 @@
             }).join('') : '<p class="vazio">Nenhum cartão cadastrado: compras no crédito saem do saldo no dia da compra.</p>'}
           </section>
 
+          <section class="secao" id="sec-diaadia">
+            <h3>Gasto do dia a dia</h3>
+            ${(() => { const x = explicarEstimativa(); return `<p class="apoio-secao">É o que o Fluxo usa para prever os dias que ainda não chegaram. ${x.fixo ? `Você definiu ${v(x.valor)} por dia. A estimativa automática daria ${v(x.auto)}.` : `Hoje a estimativa automática é ${v(x.auto)} por dia, com base em ${v(x.base)} de gastos comuns nos ${x.dia} dias deste mês.`} Ficam de fora: contas fixas, moradia, assinaturas e educação, datas futuras, gastos acima de ${v(limitePontual())} e os marcados como pontuais.</p>`; })()}
+            <form class="form-linha" id="f-diaadia" novalidate>
+              <label class="campo"><span>Valor fixo por dia</span><input id="dd-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 60,00" maxlength="10" value="${aj.diaADia ? aj.diaADia.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : ''}"></label>
+              <button class="btn" type="submit">Usar este valor</button>
+            </form>
+            ${aj.diaADia ? '<button class="link" type="button" id="dd-auto">Voltar para a estimativa automática</button>' : ''}
+            <div class="msg" id="dd-msg" role="status"></div>
+          </section>
+
           <section class="secao">
             <h3>Acesso neste aparelho</h3>
             <p class="apoio-secao">${ls.get(K.aparelho) ? 'Este aparelho está lembrado: você entra sem digitar a senha por até 60 dias desde o último uso. Tocar em Sair também faz o aparelho ser esquecido.' : 'Este aparelho não está lembrado. Para não precisar da senha toda vez, saia e entre de novo marcando "Lembrar de mim".'}</p>
@@ -1393,6 +1427,14 @@
     }, edC ? 'Cartão atualizado.' : 'Cartão adicionado.'); };
     const ccCanc = $('#cc-cancelar'); if (ccCanc) ccCanc.onclick = () => { E.editCartao = null; renderConteudo(); };
     $$('[data-editar-cartao]').forEach(b => b.onclick = () => { E.editCartao = b.dataset.editarCartao; renderConteudo(); $('#cc-nome').focus(); });
+
+    $('#f-diaadia').onsubmit = ev => { ev.preventDefault(); enviarForm(ev.target, '#dd-msg', msg => {
+      const valor = lerValor($('#dd-valor').value);
+      if (!(valor > 0)) return erro(msg, 'Digite quanto você costuma gastar por dia. Ex.: 60,00', '#dd-valor');
+      return { acao: 'salvarAjustes', corpo: { diaADia: { valor } } };
+    }, 'Valor salvo. O Fluxo já usa esse valor.'); };
+    const ddAuto = $('#dd-auto');
+    if (ddAuto) ddAuto.onclick = async () => { ddAuto.disabled = true; try { if (await gravar('salvarAjustes', { diaADia: null })) { renderConteudo(); avisoRapido('Voltou para a estimativa automática.'); } } catch (e) { ddAuto.textContent = e.message; } };
 
     const esq = $('#b-esquecer');
     if (esq) esq.onclick = async () => {

@@ -16,6 +16,13 @@ Painel pessoal de gastos: Google Forms → Planilha → Apps Script (API com log
 - O painel mostra renda x gasto, sobra prevista, % da renda por categoria, previsão de fim de mês por categoria e o que ajustar para caber no orçamento.
 - Previsão: nos primeiros 10 dias do mês mistura o ritmo atual com a média dos 3 meses anteriores. Moradia, Contas fixas, Assinaturas e Educação são previstas pelo teto.
 
+## Fluxo de caixa
+
+- Aba **Fluxo**: saldo no fim de cada dia do mês (entradas, saídas, saldo acumulado), com o menor saldo e os dias negativos.
+- Aba **Cadastros**: saldo da conta numa data (ponto de partida), salário fixo com dia, variáveis com dia, contas fixas (valor, dia, categoria, forma) e cartão (fechamento e vencimento).
+- Contas fixas entram sozinhas em Lançamentos no dia delas (rotina diária instalada por `autorizar`). Não lance essas contas pelo formulário.
+- Compras no crédito saem do saldo no vencimento da fatura. Dias futuros usam uma estimativa do gasto do dia a dia.
+
 ## Segurança
 
 - A senha não sai do aparelho: o navegador deriva uma chave com PBKDF2-SHA256 (600 mil iterações); o servidor guarda só um hash dessa chave com sal aleatório.

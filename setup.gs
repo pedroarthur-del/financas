@@ -4,14 +4,14 @@
  * PRIMEIRA INSTALAÇÃO
  *   1. Cole este arquivo inteiro em script.google.com (Novo projeto).
  *   2. Execute "setup" (cria formulário e planilha) e autorize.
- *   3. Execute "autorizar" (libera o envio de e-mail do código de senha).
+ *   3. Execute "autorizar" (libera o e-mail do código de senha e instala a rotina das contas fixas).
  *   4. Implantar > Nova implantação > App da Web
  *        Executar como: Eu | Quem pode acessar: Qualquer pessoa
  *      Copie a URL /exec e cole em config.js no GitHub.
  *
  * ATUALIZANDO UMA VERSÃO ANTERIOR (que usava TOKEN)
  *   1. Substitua todo o código por este e salve.
- *   2. Execute "autorizar".
+ *   2. Execute "autorizar" (de novo a cada versão nova: reinstala a rotina diária).
  *   3. Implantar > Gerenciar implantações > lápis > Versão: Nova versão > Implantar.
  *      A URL /exec continua a mesma.
  *
@@ -45,9 +45,9 @@ const SEG = {
   conviteHoras: 48
 };
 
-const VERSAO = '2.1.0';
+const VERSAO = '2.2.0';
 
-const ABA = { respostas: 'Respostas', lanc: 'Lançamentos', tetos: 'Tetos', resumo: 'Resumo', links: 'Links', receitas: 'Receitas' };
+const ABA = { respostas: 'Respostas', lanc: 'Lançamentos', tetos: 'Tetos', resumo: 'Resumo', links: 'Links', receitas: 'Receitas', contas: 'Contas fixas' };
 
 const TITULO = {
   valor: 'Valor (R$)',
@@ -79,7 +79,10 @@ const ROTAS = {
   dados: c => { const s = Sessao.validar(c.token); return Dados.painel(s); },
   salvarFixo: c => { const s = Sessao.validar(c.token); Receitas.salvarFixo(c, s); return Dados.painel(s); },
   adicionarVariavel: c => { const s = Sessao.validar(c.token); Receitas.adicionarVariavel(c, s); return Dados.painel(s); },
-  removerReceita: c => { const s = Sessao.validar(c.token); Receitas.remover(c); return Dados.painel(s); }
+  removerReceita: c => { const s = Sessao.validar(c.token); Receitas.remover(c); return Dados.painel(s); },
+  salvarConta: c => { const s = Sessao.validar(c.token); Contas.salvar(c, s); return Dados.painel(s); },
+  removerConta: c => { const s = Sessao.validar(c.token); Contas.remover(c); return Dados.painel(s); },
+  salvarAjustes: c => { const s = Sessao.validar(c.token); Ajustes.salvar(c); return Dados.painel(s); }
 };
 
 function doPost(e) {
@@ -148,6 +151,32 @@ const V = {
     const n = typeof v === 'number' ? v : Number(String(v || '').replace(/\./g, '').replace(',', '.'));
     if (!isFinite(n) || n <= 0 || n > 10000000) throw new ApiErro('valor_invalido', 'Digite um valor maior que zero.');
     return Math.round(n * 100) / 100;
+  },
+  dia(v, padrao) {
+    if (v === undefined || v === null || v === '') return padrao;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 1 || n > 31) throw new ApiErro('dia_invalido', 'O dia precisa ser de 1 a 31.');
+    return n;
+  },
+  saldo(v) {
+    const n = typeof v === 'number' ? v : Number(String(v || '').replace(/\./g, '').replace(',', '.'));
+    if (!isFinite(n) || Math.abs(n) > 100000000) throw new ApiErro('valor_invalido', 'Digite o saldo da conta.');
+    return Math.round(n * 100) / 100;
+  },
+  data(v) {
+    const s = String(v || '');
+    if (!/^20\d{2}-\d{2}-\d{2}$/.test(s)) throw new ApiErro('data_invalida', 'Data inválida.');
+    return s;
+  },
+  forma(v) {
+    const s = String(v || '');
+    if (!CONFIG.formasPagamento.includes(s)) throw new ApiErro('forma_invalida', 'Escolha a forma de pagamento.');
+    return s;
+  },
+  categoria(v) {
+    const s = String(v || '');
+    if (!CONFIG.categorias.includes(s)) throw new ApiErro('categoria_invalida', 'Escolha uma categoria.');
+    return s;
   },
   texto(v, max) {
     return String(v || '').replace(/[<>]/g, '').trim().slice(0, max);
@@ -374,12 +403,12 @@ const Auth = {
 };
 
 /* =====================================================================
-   RECEITAS  (aba Receitas: ID | Mês | Tipo | Descrição | Valor | Lançado por | Criado em)
+   RECEITAS  (aba Receitas: ID | Mês | Tipo | Descrição | Valor | Lançado por | Criado em | Dia)
    Fixo vale a partir do mês informado até o próximo registro de fixo.
    ===================================================================== */
 
 const Receitas = {
-  CAB: ['ID', 'Mês', 'Tipo', 'Descrição', 'Valor', 'Lançado por', 'Criado em'],
+  CAB: ['ID', 'Mês', 'Tipo', 'Descrição', 'Valor', 'Lançado por', 'Criado em', 'Dia'],
   aba() {
     const ss = Dados.planilha();
     let a = ss.getSheetByName(ABA.receitas);
@@ -389,8 +418,9 @@ const Receitas = {
       a.setFrozenRows(1);
       a.getRange('A:B').setNumberFormat('@');
       a.getRange('E2:E').setNumberFormat('"R$" #,##0.00');
-      a.setColumnWidths(1, 7, 130);
+      a.setColumnWidths(1, 8, 130);
     }
+    if (a.getLastColumn() < this.CAB.length) a.getRange(1, 8).setValue('Dia').setFontWeight('bold').setBackground('#E8EAF6');
     return a;
   },
   listar() {
@@ -403,31 +433,32 @@ const Receitas = {
         mes: l[1] instanceof Date ? Utilities.formatDate(l[1], CONFIG.fuso, 'yyyy-MM') : String(l[1]),
         tipo: String(l[2]) === 'Fixo' ? 'fixo' : 'variavel',
         descricao: String(l[3] || ''),
-        valor: Number(l[4]) || 0
+        valor: Number(l[4]) || 0,
+        dia: Number(l[7]) || (String(l[2]) === 'Fixo' ? 15 : 30)
       }));
   },
-  inserir(mes, tipo, descricao, valor, sessao) {
+  inserir(mes, tipo, descricao, valor, sessao, dia) {
     const a = this.aba();
     const id = aleatorio_().slice(0, 12);
     const linha = a.getLastRow() + 1;
     a.getRange(linha, 1, 1, 2).setNumberFormat('@');
-    a.getRange(linha, 1, 1, 7).setValues([[id, mes, tipo, descricao, valor, sessao.nome, new Date()]]);
+    a.getRange(linha, 1, 1, 8).setValues([[id, mes, tipo, descricao, valor, sessao.nome, new Date(), dia]]);
     return id;
   },
   salvarFixo(c, sessao) {
-    const mes = V.mes(c.mes), valor = V.valor(c.valor);
+    const mes = V.mes(c.mes), valor = V.valor(c.valor), dia = V.dia(c.dia, 15);
     comTrava_(() => {
       // um fixo por mês: substitui se já houver registro naquele mês
       const a = this.aba(), vals = a.getDataRange().getValues();
       for (let i = vals.length - 1; i >= 1; i--) if (String(vals[i][1]) === mes && String(vals[i][2]) === 'Fixo') a.deleteRow(i + 1);
-      this.inserir(mes, 'Fixo', V.texto(c.descricao, 80) || 'Salário fixo', valor, sessao);
+      this.inserir(mes, 'Fixo', V.texto(c.descricao, 80) || 'Salário fixo', valor, sessao, dia);
     });
   },
   adicionarVariavel(c, sessao) {
-    const mes = V.mes(c.mes), valor = V.valor(c.valor);
+    const mes = V.mes(c.mes), valor = V.valor(c.valor), dia = V.dia(c.dia, 30);
     const descricao = V.texto(c.descricao, 80);
     if (descricao.length < 2) throw new ApiErro('descricao_invalida', 'Diga de onde veio o valor (ex.: nome do projeto).');
-    comTrava_(() => this.inserir(mes, 'Variável', descricao, valor, sessao));
+    comTrava_(() => this.inserir(mes, 'Variável', descricao, valor, sessao, dia));
   },
   remover(c) {
     const id = String(c.id || '');
@@ -437,6 +468,96 @@ const Receitas = {
       for (let i = vals.length - 1; i >= 1; i--) if (String(vals[i][0]) === id) { a.deleteRow(i + 1); return; }
       throw new ApiErro('nao_encontrado', 'Esse registro já foi removido.');
     });
+  }
+};
+
+/* =====================================================================
+   CONTAS FIXAS  (aba Contas fixas: ID | Conta | Valor | Dia | Categoria | Forma | Ativa | Criada em)
+   A rotina diária lança cada conta em Lançamentos no dia dela (Origem: Conta fixa).
+   ===================================================================== */
+
+const Contas = {
+  CAB: ['ID', 'Conta', 'Valor', 'Dia', 'Categoria', 'Forma de pagamento', 'Ativa', 'Criada em'],
+  aba() {
+    const ss = Dados.planilha();
+    let a = ss.getSheetByName(ABA.contas);
+    if (!a) {
+      a = ss.insertSheet(ABA.contas);
+      a.getRange(1, 1, 1, this.CAB.length).setValues([this.CAB]).setFontWeight('bold').setBackground('#E8EAF6');
+      a.setFrozenRows(1);
+      a.getRange('A:A').setNumberFormat('@');
+      a.getRange('C2:C').setNumberFormat('"R$" #,##0.00');
+      a.setColumnWidths(1, 8, 130);
+    }
+    return a;
+  },
+  listar() {
+    const a = Dados.planilha().getSheetByName(ABA.contas);
+    if (!a) return [];
+    return a.getDataRange().getValues().slice(1).filter(l => l[0] && l[1]).map(l => ({
+      id: String(l[0]), nome: String(l[1]), valor: Number(l[2]) || 0, dia: Number(l[3]) || 1,
+      categoria: String(l[4] || 'Contas fixas'), forma: String(l[5] || 'Pix'),
+      ativa: l[6] !== false && String(l[6]).toLowerCase() !== 'não',
+      criada: l[7] instanceof Date ? Utilities.formatDate(l[7], CONFIG.fuso, 'yyyy-MM-dd') : String(l[7] || '')
+    }));
+  },
+  salvar(c) {
+    const nome = V.texto(c.nome, 60);
+    if (nome.length < 2) throw new ApiErro('nome_invalido', 'Dê um nome à conta. Ex.: Aluguel');
+    const valor = V.valor(c.valor), dia = V.dia(c.dia, 1), categoria = V.categoria(c.categoria), forma = V.forma(c.forma);
+    comTrava_(() => {
+      const a = this.aba(), id = aleatorio_().slice(0, 12), linha = a.getLastRow() + 1;
+      a.getRange(linha, 1).setNumberFormat('@');
+      a.getRange(linha, 1, 1, 8).setValues([[id, nome, valor, dia, categoria, forma, true, new Date()]]);
+    });
+  },
+  remover(c) {
+    const id = String(c.id || '');
+    if (!/^[a-f0-9]{12}$/.test(id)) throw new ApiErro('id_invalido', 'Conta não encontrada.');
+    comTrava_(() => {
+      const a = this.aba(), vals = a.getDataRange().getValues();
+      for (let i = vals.length - 1; i >= 1; i--) if (String(vals[i][0]) === id) { a.deleteRow(i + 1); return; }
+      throw new ApiErro('nao_encontrado', 'Essa conta já foi removida.');
+    });
+  }
+};
+
+/** Rotina diária: lança as contas fixas que vencem até hoje e ainda não foram lançadas neste mês. */
+function lancarContasDoDia() {
+  const agora = new Date();
+  const ymd = Utilities.formatDate(agora, CONFIG.fuso, 'yyyy-MM-dd');
+  const [y, m, d] = ymd.split('-').map(Number);
+  const ultimo = new Date(y, m, 0).getDate();
+  const mes = ymd.slice(0, 7);
+  const props = Store.p();
+  const lanc = Dados.planilha().getSheetByName(ABA.lanc);
+  Contas.listar().forEach(ct => {
+    if (!ct.ativa) return;
+    const diaConta = Math.min(ct.dia, ultimo);
+    const venc = `${mes}-${('0' + diaConta).slice(-2)}`;
+    const marca = `CF:${ct.id}:${mes}`;
+    if (diaConta > d || props.getProperty(marca)) return;
+    if (ct.criada && ct.criada > venc) return; // conta criada depois do vencimento deste mês
+    lanc.appendRow([new Date(y, m - 1, diaConta, 12), ct.valor, ct.categoria, ct.forma, ct.nome, 'Conta fixa']);
+    props.setProperty(marca, '1');
+  });
+}
+
+/* =====================================================================
+   AJUSTES  (saldo da conta numa data e ciclo do cartão de crédito)
+   ===================================================================== */
+
+const Ajustes = {
+  ler() { return Store.get('AJUSTES') || { saldo: null, cartao: null }; },
+  salvar(c) {
+    const a = this.ler();
+    if (c.saldo !== undefined) {
+      a.saldo = c.saldo === null ? null : { valor: V.saldo(c.saldo.valor), data: V.data(c.saldo.data) };
+    }
+    if (c.cartao !== undefined) {
+      a.cartao = c.cartao === null ? null : { fecha: V.dia(c.cartao.fecha), vence: V.dia(c.cartao.vence) };
+    }
+    Store.set('AJUSTES', a);
   }
 };
 
@@ -465,7 +586,7 @@ const Dados = {
     const tetos = ss.getSheetByName(ABA.tetos).getDataRange().getValues().slice(1)
       .filter(l => l[0] && CONFIG.categorias.includes(String(l[0])))
       .map(l => ({ categoria: String(l[0]), teto: Number(l[1]) || 0 }));
-    return { atualizado: new Date().toISOString(), usuario: { nome: sessao.nome }, lancamentos, tetos, receitas: Receitas.listar() };
+    return { atualizado: new Date().toISOString(), usuario: { nome: sessao.nome }, lancamentos, tetos, receitas: Receitas.listar(), contas: Contas.listar(), ajustes: Ajustes.ler(), categorias: CONFIG.categorias, formas: CONFIG.formasPagamento };
   }
 };
 
@@ -629,6 +750,10 @@ function aoEnviarFormulario(e) {
 function autorizar() {
   Logger.log('E-mails disponíveis hoje: ' + MailApp.getRemainingDailyQuota());
   Store.del('TOKEN'); // remove o token da versão anterior
+  // rotina diária das contas fixas (6h da manhã)
+  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'lancarContasDoDia').forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('lancarContasDoDia').timeBased().everyDays(1).atHour(6).inTimezone(CONFIG.fuso).create();
+  Logger.log('⏰ Rotina diária das contas fixas instalada.');
   Logger.log('✅ Autorizado. Agora atualize a implantação (Gerenciar implantações > Nova versão).');
 }
 

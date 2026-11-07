@@ -362,8 +362,8 @@
   // Categorias pagas uma vez no mês: a previsão usa o teto (ou a média), não o ritmo diário
   const FIXAS = ['Moradia', 'Contas fixas', 'Assinaturas', 'Educação'];
   const chaveMes = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
-  const somaMes = (chave, cat) => (E.dados?.lancamentos || [])
-    .filter(l => String(l.data).startsWith(chave) && (!cat || l.categoria === cat))
+  const somaMes = (chave, cat, semFixas) => (E.dados?.lancamentos || [])
+    .filter(l => String(l.data).startsWith(chave) && (!cat || l.categoria === cat) && (!semFixas || l.origem !== 'Conta fixa'))
     .reduce((s, l) => s + l.valor, 0);
   const mesesAntes = (d, n) => Array.from({ length: n }, (_, i) => new Date(d.getFullYear(), d.getMonth() - 1 - i, 1));
   const temLancamento = chave => (E.dados?.lancamentos || []).some(l => String(l.data).startsWith(chave));
@@ -380,22 +380,27 @@
   }
 
   /** Média de gasto da categoria nos meses anteriores que têm lançamentos (até 3). */
-  function mediaHistorica(ref, cat) {
+  function mediaHistorica(ref, cat, semFixas) {
     const meses = mesesAntes(ref, 6).map(chaveMes).filter(temLancamento).slice(0, 3);
     if (!meses.length) return null;
-    return meses.reduce((s, k) => s + somaMes(k, cat), 0) / meses.length;
+    return meses.reduce((s, k) => s + somaMes(k, cat, semFixas), 0) / meses.length;
   }
 
-  /** Previsão de fim de mês por categoria. Mistura o ritmo atual com o histórico no começo do mês. */
+  /** Previsão de fim de mês por categoria: o que já saiu + contas fixas a vencer + ritmo do dia a dia. */
   function prever(cat, gasto, teto, ctx) {
     if (!ctx.atual) return gasto;
-    const hist = mediaHistorica(E.ref, cat);
-    if (FIXAS.includes(cat)) return Math.max(gasto, teto || hist || 0);
-    const ritmo = gasto / ctx.dia;
+    const contasCat = (E.dados.contas || []).filter(c => c.ativa && c.categoria === cat);
+    const futuras = contasCat.filter(c => Math.min(c.dia, ctx.diasMes) > ctx.dia && !(c.criada && c.criada > `${chaveMes(E.ref)}-${pad(Math.min(c.dia, ctx.diasMes))}`)).reduce((s, c) => s + c.valor, 0);
+    if (FIXAS.includes(cat)) {
+      if (contasCat.length) return gasto + futuras;
+      return Math.max(gasto, teto || mediaHistorica(E.ref, cat) || 0);
+    }
+    const gVar = somaMes(chaveMes(E.ref), cat, true);
+    const hist = mediaHistorica(E.ref, cat, true);
+    const ritmo = gVar / ctx.dia;
     const ritmoHist = hist !== null ? hist / ctx.diasMes : ritmo;
     const peso = Math.min(1, ctx.dia / 10); // nos 10 primeiros dias o histórico pesa mais
-    const taxa = ritmo * peso + ritmoHist * (1 - peso);
-    return gasto + taxa * (ctx.diasMes - ctx.dia);
+    return gasto + futuras + (ritmo * peso + ritmoHist * (1 - peso)) * (ctx.diasMes - ctx.dia);
   }
 
   async function carregarDados() {
@@ -446,7 +451,8 @@
           </nav>
           <div class="abas abas-painel" role="tablist" aria-label="Seções">
             <button type="button" role="tab" data-aba="painel" aria-selected="${E.aba === 'painel'}">Painel</button>
-            <button type="button" role="tab" data-aba="renda" aria-selected="${E.aba === 'renda'}">Renda</button>
+            <button type="button" role="tab" data-aba="fluxo" aria-selected="${E.aba === 'fluxo'}">Fluxo</button>
+            <button type="button" role="tab" data-aba="cadastros" aria-selected="${E.aba === 'cadastros'}">Cadastros</button>
           </div>
         </div>
         <div id="conteudo"><p class="carregando">Buscando seus lançamentos, ${esc(s?.nome || '')}…</p></div>
@@ -484,7 +490,7 @@
 
   function renderConteudo() {
     if (!E.dados || !$('#conteudo')) return;
-    if (E.aba === 'renda') renderRenda(); else renderPainel();
+    if (E.aba === 'cadastros') renderCadastros(); else if (E.aba === 'fluxo') renderFluxo(); else renderPainel();
     $$('[data-largura]').forEach(el => { el.style.width = el.dataset.largura + '%'; });  // CSSOM: a CSP bloqueia style=""
     $$('[data-inicio]').forEach(el => { el.style.left = el.dataset.inicio + '%'; });
     const at = E.dados.atualizado ? new Date(E.dados.atualizado) : null;
@@ -554,7 +560,7 @@
     let balanco;
     if (!R.total) {
       balanco = `<p class="vazio">Cadastre sua renda de ${mesTxt} para ver quanto sobra e quanto cada gasto pesa no que você ganha.</p>
-        <button class="btn" type="button" data-aba-ir="renda">Lançar renda</button>`;
+        <button class="btn" type="button" data-aba-ir="cadastros">Lançar renda</button>`;
     } else {
       const gastoRef = atual ? proj : total;
       const sobra = R.total - gastoRef;
@@ -622,7 +628,7 @@
       else if (x.t) partes.push(`<span class="pct ${classe(x.g / x.t)}">${pct(x.g / x.t)} do teto</span>`);
       if (!x.t) partes.push('Sem teto');
       if (R.total) partes.push(`${pct((atual ? x.p : x.g) / R.total)} da renda`);
-      if (atual && FIXAS.includes(x.c)) partes.push('Conta do mês: a previsão usa o teto');
+      if (atual && FIXAS.includes(x.c)) partes.push((E.dados.contas || []).some(c => c.ativa && c.categoria === x.c) ? 'Inclui as contas fixas a vencer' : 'Conta do mês: a previsão usa o teto');
       return `<div class="cat"><div class="linha1"><span>${esc(x.c)}</span><span class="v">${topo}</span></div>
         <div class="trilho">
           <i class="t-gasto ${x.t ? classe(x.g / x.t) : 'sem-teto'}" data-largura="${w(x.g, escala)}"></i>
@@ -704,85 +710,362 @@
     if (E.grafico) E.grafico();
   }
 
-  /* -------------------------- aba RENDA -------------------------- */
-  const lerValor = s => { const n = Number(String(s || '').replace(/[R$\s]/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')); return isFinite(n) ? n : NaN; };
+  /* ---------------------- fluxo de caixa (cálculo) ---------------------- */
+  const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const deYmd = k => { const [a, mm, dd] = k.split('-').map(Number); return new Date(a, mm - 1, dd); };
+  const diaNoMes = (a, m0, dia) => new Date(a, m0, Math.min(dia, new Date(a, m0 + 1, 0).getDate()));
+  const SEMANA = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
 
-  function renderRenda() {
-    const chave = chaveMes(E.ref), mesTxt = MESES[E.ref.getMonth()];
+  /** Data em que uma compra no crédito sai da conta (vencimento da fatura). */
+  function pagamentoCredito(k) {
+    const c = E.dados?.ajustes?.cartao; if (!c) return k;
+    const p = deYmd(k);
+    let fech = diaNoMes(p.getFullYear(), p.getMonth(), c.fecha);
+    if (p > fech) fech = diaNoMes(p.getFullYear(), p.getMonth() + 1, c.fecha);
+    const venc = c.vence > c.fecha
+      ? diaNoMes(fech.getFullYear(), fech.getMonth(), c.vence)
+      : diaNoMes(fech.getFullYear(), fech.getMonth() + 1, c.vence);
+    return ymd(venc);
+  }
+  const usaCartao = forma => forma === 'Crédito' && !!E.dados?.ajustes?.cartao;
+
+  /** Gasto variável diário estimado (sem contas fixas), misturando o mês atual com o histórico. */
+  function ritmoVariavel() {
+    const k = chaveMes(hoje), dia = hoje.getDate();
+    const atualVar = somaMes(k, null, true);
+    const meses = mesesAntes(hoje, 6).map(chaveMes).filter(temLancamento).slice(0, 3);
+    const hist = meses.length ? meses.reduce((s, x) => s + somaMes(x, null, true), 0) / meses.length / 30 : null;
+    const ritmo = atualVar / dia;
+    if (hist === null) return ritmo;
+    const peso = Math.min(1, dia / 10);
+    return ritmo * peso + hist * (1 - peso);
+  }
+
+  /** Entradas e saídas por dia entre duas datas (inclusive). */
+  function movimentos(ini, fim) {
+    const kIni = ymd(ini), kFim = ymd(fim), kHoje = ymd(hoje);
+    const M = new Map();
+    const slot = k => { if (!M.has(k)) M.set(k, { ent: [], sai: [] }); return M.get(k); };
+    const dentro = k => k >= kIni && k <= kFim;
+    const faturas = new Map(); // vencimento -> { valor, qtd, prev }
+    const addFatura = (k, valor, prev) => { const f = faturas.get(k) || { valor: 0, qtd: 0, prev: 0 }; f.valor += valor; f.qtd++; if (prev) f.prev += valor; faturas.set(k, f); };
+
+    const meses = [];
+    for (let d = new Date(ini.getFullYear(), ini.getMonth(), 1); d <= fim; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) meses.push(d);
+    // lança também faturas de compras do mês anterior ao início do intervalo
+    const desde = ymd(new Date(ini.getFullYear(), ini.getMonth() - 2, 1));
+
+    // 1. entradas
+    const R = E.dados.receitas || [];
+    const diaVar = (R.filter(r => r.tipo === 'variavel').sort((a, b) => b.mes.localeCompare(a.mes))[0] || {}).dia || 30;
+    meses.forEach(d => {
+      const ch = chaveMes(d), r = renda(ch);
+      if (r.fixoReg) { const k = ymd(diaNoMes(d.getFullYear(), d.getMonth(), r.fixoReg.dia || 15)); if (dentro(k)) slot(k).ent.push({ desc: r.fixoReg.descricao || 'Salário fixo', valor: r.fixo, prev: k > kHoje }); }
+      r.variaveis.forEach(x => { const k = ymd(diaNoMes(d.getFullYear(), d.getMonth(), x.dia || 30)); if (dentro(k)) slot(k).ent.push({ desc: x.descricao, valor: x.valor, prev: k > kHoje }); });
+      if (!r.variaveis.length && ch >= chaveMes(hoje)) {
+        const media = [d, ...mesesAntes(d, 3)].slice(1).map(chaveMes).reduce((s, x) => s + renda(x).variavel, 0) / 3;
+        const k = ymd(diaNoMes(d.getFullYear(), d.getMonth(), diaVar));
+        if (media > 0 && dentro(k) && k > kHoje) slot(k).ent.push({ desc: 'Variável (média dos últimos 3 meses)', valor: media, prev: true });
+      }
+    });
+
+    // 2. saídas lançadas (crédito entra no vencimento da fatura)
+    (E.dados.lancamentos || []).forEach(l => {
+      if (String(l.data) < desde) return;
+      if (usaCartao(l.forma)) { addFatura(pagamentoCredito(l.data), l.valor, false); return; }
+      if (dentro(l.data)) slot(l.data).sai.push({ desc: l.descricao || l.categoria, valor: l.valor, cat: l.categoria });
+    });
+
+    // 3. contas fixas que ainda vão vencer (as vencidas já foram lançadas pela rotina diária)
+    const contas = (E.dados.contas || []).filter(c => c.ativa);
+    const mesesContas = [new Date(ini.getFullYear(), ini.getMonth() - 1, 1), ...meses];
+    mesesContas.forEach(d => contas.forEach(c => {
+      const k = ymd(diaNoMes(d.getFullYear(), d.getMonth(), c.dia));
+      if (k <= kHoje || (c.criada && c.criada > k)) return;
+      if (usaCartao(c.forma)) addFatura(pagamentoCredito(k), c.valor, true);
+      else if (dentro(k)) slot(k).sai.push({ desc: c.nome, valor: c.valor, prev: true, fixa: true });
+    }));
+
+    // 4. gasto do dia a dia estimado nos dias que ainda não chegaram
+    const taxa = ritmoVariavel();
+    if (taxa > 0) for (let d = new Date(Math.max(+ini, +hoje + 86400000)); ymd(d) <= kFim; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) {
+      slot(ymd(d)).sai.push({ desc: 'Gastos do dia a dia (estimativa)', valor: taxa, prev: true, estimativa: true });
+    }
+
+    faturas.forEach((f, k) => { if (dentro(k)) slot(k).sai.push({ desc: `Fatura do cartão (${f.qtd} ${f.qtd === 1 ? 'item' : 'itens'}${f.prev ? ', inclui contas a lançar' : ''})`, valor: f.valor, prev: k > kHoje, fatura: true }); });
+    return M;
+  }
+
+  /** Saldo no fim de cada dia do mês de referência. */
+  function fluxoDoMes(ref) {
+    const ini = new Date(ref.getFullYear(), ref.getMonth(), 1), fim = new Date(ref.getFullYear(), ref.getMonth() + 1, 0);
+    const ancora = E.dados.ajustes?.saldo || null;
+    const dA = ancora ? deYmd(ancora.data) : null;
+    const de = dA && dA < ini ? new Date(dA.getFullYear(), dA.getMonth(), dA.getDate() + 1) : ini;
+    const ate = dA && dA > fim ? dA : fim;
+    const M = movimentos(de, ate);
+    const net = k => { const m = M.get(k); return m ? m.ent.reduce((s, x) => s + x.valor, 0) - m.sai.reduce((s, x) => s + x.valor, 0) : 0; };
+
+    // saldo no início do mês
+    let inicial = 0;
+    if (ancora) {
+      inicial = ancora.valor;
+      const kA = ancora.data, kIni = ymd(ini);
+      if (kA < kIni) { for (let d = new Date(dA.getFullYear(), dA.getMonth(), dA.getDate() + 1); d < ini; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) inicial += net(ymd(d)); }
+      else { for (let d = new Date(+ini); ymd(d) <= kA; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) inicial -= net(ymd(d)); }
+    }
+    const dias = [];
+    let saldo = inicial;
+    for (let d = new Date(+ini); d <= fim; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) {
+      const k = ymd(d), m = M.get(k) || { ent: [], sai: [] };
+      const ent = m.ent.reduce((s, x) => s + x.valor, 0), sai = m.sai.reduce((s, x) => s + x.valor, 0);
+      saldo += ent - sai;
+      dias.push({ d, k, ent, sai, saldo, itens: m, futuro: k > ymd(hoje), hoje: k === ymd(hoje) });
+    }
+    return { inicial, dias, ancora };
+  }
+
+  /* -------------------------- aba FLUXO -------------------------- */
+  function renderFluxo() {
+    const mesTxt = MESES[E.ref.getMonth()];
+    const F = fluxoDoMes(E.ref);
+    const ult = F.dias[F.dias.length - 1];
+    const min = F.dias.reduce((a, b) => b.saldo < a.saldo ? b : a, F.dias[0]);
+    const negativos = F.dias.filter(x => x.saldo < 0);
+    const temFuturo = F.dias.some(x => x.futuro);
+    const totEnt = F.dias.reduce((s, x) => s + x.ent, 0), totSai = F.dias.reduce((s, x) => s + x.sai, 0);
+    const proxEnt = F.dias.find(x => x.futuro && x.ent > 0);
+
+    const avisos = [];
+    if (!F.ancora) avisos.push(`<div class="faixa-aviso">Cadastre quanto tem na conta hoje (em Cadastros) para ver o saldo real. Por enquanto, o fluxo começa do zero no dia 1.
+      <button class="link" type="button" data-aba-ir="cadastros">Cadastrar saldo</button></div>`);
+    if (negativos.length) {
+      const a = negativos[0], b = negativos[negativos.length - 1];
+      avisos.push(`<p class="alerta">Seu saldo ${temFuturo ? 'fica' : 'ficou'} negativo ${a.k === b.k ? `no dia ${a.d.getDate()}` : `entre os dias ${a.d.getDate()} e ${b.d.getDate()}`}. O pior momento é o dia ${min.d.getDate()}, com ${v(min.saldo)}.${proxEnt && proxEnt.k > a.k ? ` A próxima entrada é no dia ${proxEnt.d.getDate()}: antecipe a entrada ou adie contas desse período.` : ''}</p>`);
+    }
+
+    const htmlDias = F.dias.map(x => {
+      const vazio = !x.itens.ent.length && !x.itens.sai.length;
+      const itens = [...x.itens.ent.map(i => ({ ...i, e: true })), ...x.itens.sai]
+        .map(i => `<li class="${i.e ? 'ent' : 'sai'}${i.prev ? ' prev' : ''}"><span>${esc(i.desc)}${i.prev ? ' <small>previsto</small>' : ''}</span><span class="valor num">${i.e ? '+' : '−'} ${brl(i.valor)}</span></li>`).join('');
+      const resumo = `<span class="fd-dia">${pad(x.d.getDate())} <small>${x.hoje ? 'hoje' : SEMANA[x.d.getDay()]}</small></span>
+        <span class="fd-ent valor num">${x.ent ? '+ ' + brl(x.ent) : ''}</span>
+        <span class="fd-sai valor num">${x.sai ? '− ' + brl(x.sai) : ''}</span>
+        <span class="fd-saldo valor num${x.saldo < 0 ? ' excesso' : ''}">${brl(x.saldo)}</span>`;
+      const cls = `fd${x.futuro ? ' futuro' : ''}${x.hoje ? ' hoje' : ''}${vazio ? ' vazio' : ''}`;
+      return vazio ? `<div class="${cls}"><div class="fd-linha">${resumo}</div></div>`
+        : `<details class="${cls}"><summary class="fd-linha">${resumo}</summary><ul class="fd-itens">${itens}</ul></details>`;
+    }).join('');
+
+    $('#conteudo').innerHTML = `
+      <div class="abertura">
+        <section class="heroi" aria-label="Saldo do mês">
+          <p class="frase">${temFuturo ? `Saldo previsto em ${ult.d.getDate()} de ${mesTxt}` : `Saldo em ${ult.d.getDate()} de ${mesTxt}`}</p>
+          ${valorDeFace(ult.saldo, ult.saldo < 0)}
+          <p class="depois">Menor saldo do mês: ${v(min.saldo)} no dia ${min.d.getDate()}.</p>
+          <p class="meta">Começou o mês com ${v(F.inicial)}. Entradas ${v(totEnt)}, saídas ${v(totSai)}.${proxEnt ? ` Próxima entrada: dia ${proxEnt.d.getDate()}, ${v(proxEnt.ent)}.` : ''}</p>
+        </section>
+        <section class="ritmo" aria-label="Saldo dia a dia"><div id="ritmo-svg"></div>
+          <div class="legenda"><span>Saldo realizado</span>${temFuturo ? '<span class="l-ideal">Saldo previsto</span>' : ''}</div></section>
+      </div>
+      ${faixa()}
+      ${avisos.join('')}
+      <section class="secao">
+        <h3>Dia a dia <small>toque no dia para ver o que entrou e saiu</small></h3>
+        <div class="fd cab"><div class="fd-linha"><span class="fd-dia">Dia</span><span class="fd-ent">Entrou</span><span class="fd-sai">Saiu</span><span class="fd-saldo">Saldo</span></div></div>
+        ${htmlDias}
+        <p class="previsao">${E.dados.ajustes?.cartao ? `Compras no crédito entram no dia ${E.dados.ajustes.cartao.vence}, quando a fatura vence.` : 'Compras no crédito entram no dia da compra. Cadastre o fechamento e o vencimento do cartão para elas caírem no dia da fatura.'} Os dias que ainda não chegaram usam uma estimativa do seu gasto do dia a dia.</p>
+      </section>`;
+
+    $$('[data-aba-ir]').forEach(b => b.onclick = () => irPara(b.dataset.abaIr));
+    E.grafico = () => { const box = $('#ritmo-svg'); if (box) box.innerHTML = graficoSaldo(F.dias, box.clientWidth); };
+    E.grafico();
+    const hj = $('.fd.hoje'); if (hj && hj.tagName === 'DETAILS') hj.open = true;
+  }
+
+  function graficoSaldo(dias, largura) {
+    const W = Math.max(280, Math.round(largura || 640)), H = Math.round(Math.min(220, Math.max(160, W * .36)));
+    const P = { e: 52, d: 8, t: 10, b: 24 };
+    const vals = dias.map(x => x.saldo);
+    let lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
+    if (hi - lo < 1) hi = lo + 1;
+    const folga = (hi - lo) * .08; lo -= lo < 0 ? folga : 0; hi += folga;
+    const n = dias.length;
+    const x = i => P.e + i / Math.max(1, n - 1) * (W - P.e - P.d);
+    const yv = val => P.t + (hi - val) / (hi - lo) * (H - P.t - P.b);
+    const curto = val => Math.abs(val) >= 1000 ? (val / 1000).toFixed(1).replace('.', ',').replace(',0', '') + ' mil' : String(Math.round(val));
+    let g = '';
+    [lo, (lo + hi) / 2, hi].forEach(val => { const yy = yv(val).toFixed(1); g += `<line class="grade" x1="${P.e}" x2="${W - P.d}" y1="${yy}" y2="${yy}"/><text class="eixo" x="${P.e - 8}" y="${+yy + 4}" text-anchor="end">${curto(val)}</text>`; });
+    if (lo < 0) g += `<line class="zero" x1="${P.e}" x2="${W - P.d}" y1="${yv(0)}" y2="${yv(0)}"/>`;
+    [0, 9, 19, n - 1].forEach(i => { g += `<text class="eixo" x="${x(i)}" y="${H - 5}" text-anchor="middle">${i + 1}</text>`; });
+    const iHoje = dias.findIndex(d => d.futuro);
+    const corte = iHoje === -1 ? n - 1 : Math.max(0, iHoje - 1);
+    const pts = (a, b) => dias.slice(a, b + 1).map((d, j) => `${x(a + j).toFixed(1)},${yv(d.saldo).toFixed(1)}`).join(' ');
+    if (dias[0].futuro) g += `<polyline class="ideal" points="${pts(0, n - 1)}"/>`;
+    else {
+      g += `<polyline class="real" points="${pts(0, corte)}"/>`;
+      if (corte < n - 1) g += `<polyline class="ideal" points="${pts(corte, n - 1)}"/>`;
+      g += `<circle class="ponto${dias[corte].saldo < 0 ? ' excesso' : ''}" cx="${x(corte)}" cy="${yv(dias[corte].saldo)}" r="4.5"/>`;
+    }
+    dias.forEach((d, i) => { if (d.ent > 0) g += `<circle class="marco-ent" cx="${x(i)}" cy="${yv(d.saldo)}" r="3"/>`; });
+    return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Saldo da conta dia a dia">${g}</svg>`;
+  }
+
+  /* ------------------------ aba CADASTROS ------------------------ */
+  const lerValor = s => { const t = String(s || '').replace(/[R$\s]/g, ''); const neg = /^-/.test(t); const n = Number(t.replace(/^-/, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')); return isFinite(n) ? (neg ? -n : n) : NaN; };
+  const opcoes = (lista, sel) => lista.map(o => `<option${o === sel ? ' selected' : ''}>${esc(o)}</option>`).join('');
+
+  function renderCadastros() {
+    const D = E.dados, chave = chaveMes(E.ref), mesTxt = MESES[E.ref.getMonth()];
     const R = renda(chave);
-    const fixos = (E.dados.receitas || []).filter(r => r.tipo === 'fixo').sort((a, b) => b.mes.localeCompare(a.mes));
+    const fixos = (D.receitas || []).filter(r => r.tipo === 'fixo').sort((a, b) => b.mes.localeCompare(a.mes));
     const base3 = [E.ref, ...mesesAntes(E.ref, 2)].map(chaveMes);
     const media3 = base3.reduce((s, k) => s + renda(k).variavel, 0) / 3;
     const nomeMesChave = k => { const [a, mm] = k.split('-').map(Number); return MESES[mm - 1] + ' de ' + a; };
-    const btnRemover = id => `<button class="link perigo" type="button" data-remover="${esc(id)}">Remover</button>`;
+    const dataBR = k => k.split('-').reverse().join('/');
+    const btnRemover = (id, acao) => `<button class="link perigo" type="button" data-remover="${esc(id)}" data-acao-remover="${acao}">Remover</button>`;
+    const contas = (D.contas || []).slice().sort((a, b) => a.dia - b.dia);
+    const totalContas = contas.filter(c => c.ativa).reduce((s, c) => s + c.valor, 0);
+    const aj = D.ajustes || {};
+    const cats = D.categorias || [], formas = D.formas || ['Pix', 'Crédito', 'Débito', 'Dinheiro'];
 
     $('#conteudo').innerHTML = `
       <section class="heroi" aria-label="Renda do mês">
         <p class="frase">Sua renda em ${mesTxt}</p>
         ${valorDeFace(R.total)}
-        <p class="depois">${R.total ? `Fixo <span class="valor">${brl(R.fixo)}</span>${R.variavel ? ` e variável <span class="valor">${brl(R.variavel)}</span>` : ', sem variável lançado'}.` : 'Nenhuma renda cadastrada para este mês.'}</p>
+        <p class="depois">${R.total ? `Fixo <span class="valor">${brl(R.fixo)}</span>${R.variavel ? ` e variável <span class="valor">${brl(R.variavel)}</span>` : ', sem variável lançado'}. Contas fixas: <span class="valor">${brl(totalContas)}</span> por mês.` : 'Nenhuma renda cadastrada para este mês.'}</p>
       </section>
       ${faixa()}
       <div class="grade-secoes">
-        <section class="secao">
-          <h3>Salário fixo</h3>
-          <p class="apoio-secao">${R.fixoReg ? `Em vigor: ${v(R.fixoReg.valor)} desde ${nomeMesChave(R.fixoReg.mes)}.` : 'Nenhum fixo em vigor neste mês.'} O fixo se repete todo mês até você cadastrar um valor novo.</p>
-          <form class="form-linha" id="f-fixo" novalidate>
-            <label class="campo"><span>Valor por mês</span><input id="fx-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 4.500,00" maxlength="14"></label>
-            <label class="campo"><span>A partir de</span><input id="fx-mes" type="month" value="${chave}" required></label>
-            <button class="btn" type="submit">Salvar fixo</button>
-          </form>
-          <div class="msg" id="fx-msg" role="status"></div>
-          ${fixos.length ? `<h4>Histórico do fixo</h4>${fixos.map(f => `<div class="linha"><div class="esq"><div>Desde ${nomeMesChave(f.mes)}</div></div><div class="dir"><span class="valor num">${brl(f.valor)}</span> ${btnRemover(f.id)}</div></div>`).join('')}` : ''}
-        </section>
-        <section class="secao">
-          <h3>Variável de ${mesTxt}</h3>
-          <p class="apoio-secao">Lance o que entrou por projeto, comissão ou bônus. Média dos últimos 3 meses: ${v(media3)}.</p>
-          <form class="form-linha" id="f-var" novalidate>
-            <label class="campo"><span>De onde veio</span><input id="vr-desc" type="text" autocomplete="off" placeholder="Ex.: Projeto NSF" maxlength="80"></label>
-            <label class="campo"><span>Valor</span><input id="vr-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 1.200,00" maxlength="14"></label>
-            <button class="btn" type="submit">Adicionar</button>
-          </form>
-          <div class="msg" id="vr-msg" role="status"></div>
-          ${R.variaveis.length ? R.variaveis.map(r => `<div class="linha"><div class="esq"><div>${esc(r.descricao)}</div></div><div class="dir"><span class="valor num">${brl(r.valor)}</span> ${btnRemover(r.id)}</div></div>`).join('')
-            : `<p class="vazio">Nenhum variável lançado em ${mesTxt}.</p>`}
-        </section>
+        <div>
+          <section class="secao">
+            <h3>Saldo em conta</h3>
+            <p class="apoio-secao">${aj.saldo ? `Último informado: ${v(aj.saldo.valor)} em ${dataBR(aj.saldo.data)}.` : 'Informe quanto tem na conta para o fluxo mostrar o saldo real.'} Atualize sempre que quiser acertar o saldo com o banco.</p>
+            <form class="form-linha" id="f-saldo" novalidate>
+              <label class="campo"><span>Saldo na conta</span><input id="sd-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 2.350,00" maxlength="16"></label>
+              <label class="campo"><span>Em que dia</span><input id="sd-data" type="date" value="${ymd(hoje)}"></label>
+              <button class="btn" type="submit">Salvar saldo</button>
+            </form>
+            <div class="msg" id="sd-msg" role="status"></div>
+          </section>
+
+          <section class="secao">
+            <h3>Salário fixo</h3>
+            <p class="apoio-secao">${R.fixoReg ? `Em vigor: ${v(R.fixoReg.valor)} no dia ${R.fixoReg.dia || 15}, desde ${nomeMesChave(R.fixoReg.mes)}.` : 'Nenhum fixo em vigor neste mês.'} Ele se repete todo mês até você cadastrar um valor novo.</p>
+            <form class="form-linha tres" id="f-fixo" novalidate>
+              <label class="campo"><span>Valor por mês</span><input id="fx-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 3.700,00" maxlength="14"></label>
+              <label class="campo"><span>Dia que cai</span><input id="fx-dia" type="number" inputmode="numeric" min="1" max="31" value="${R.fixoReg?.dia || 15}"></label>
+              <label class="campo"><span>A partir de</span><input id="fx-mes" type="month" value="${chave}"></label>
+              <button class="btn" type="submit">Salvar fixo</button>
+            </form>
+            <div class="msg" id="fx-msg" role="status"></div>
+            ${fixos.length ? `<h4>Histórico do fixo</h4>${fixos.map(f => `<div class="linha"><div class="esq"><div>Desde ${nomeMesChave(f.mes)}</div><small>Cai no dia ${f.dia || 15}</small></div><div class="dir"><span class="valor num">${brl(f.valor)}</span> ${btnRemover(f.id, 'removerReceita')}</div></div>`).join('')}` : ''}
+          </section>
+
+          <section class="secao">
+            <h3>Variável de ${mesTxt}</h3>
+            <p class="apoio-secao">Projetos, comissões e bônus. Média dos últimos 3 meses: ${v(media3)}. Nos meses sem variável lançado, o fluxo usa essa média.</p>
+            <form class="form-linha tres" id="f-var" novalidate>
+              <label class="campo"><span>De onde veio</span><input id="vr-desc" type="text" autocomplete="off" placeholder="Ex.: Projeto NSF" maxlength="80"></label>
+              <label class="campo"><span>Valor</span><input id="vr-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 1.200,00" maxlength="14"></label>
+              <label class="campo"><span>Dia que cai</span><input id="vr-dia" type="number" inputmode="numeric" min="1" max="31" value="30"></label>
+              <button class="btn" type="submit">Adicionar</button>
+            </form>
+            <div class="msg" id="vr-msg" role="status"></div>
+            ${R.variaveis.length ? R.variaveis.map(r => `<div class="linha"><div class="esq"><div>${esc(r.descricao)}</div><small>Dia ${r.dia || 30}</small></div><div class="dir"><span class="valor num">${brl(r.valor)}</span> ${btnRemover(r.id, 'removerReceita')}</div></div>`).join('')
+              : `<p class="vazio">Nenhum variável lançado em ${mesTxt}.</p>`}
+          </section>
+        </div>
+
+        <div>
+          <section class="secao">
+            <h3>Contas fixas <small>${brl(totalContas)} por mês</small></h3>
+            <p class="apoio-secao">Elas entram sozinhas em Lançamentos no dia de cada uma. Não lance essas contas pelo formulário, senão contam duas vezes.</p>
+            <form class="form-conta" id="f-conta" novalidate>
+              <label class="campo c-nome"><span>Conta</span><input id="ct-nome" type="text" autocomplete="off" placeholder="Ex.: Aluguel" maxlength="60"></label>
+              <label class="campo"><span>Valor</span><input id="ct-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 1.500,00" maxlength="14"></label>
+              <label class="campo"><span>Dia</span><input id="ct-dia" type="number" inputmode="numeric" min="1" max="31" placeholder="10"></label>
+              <label class="campo"><span>Categoria</span><select id="ct-cat">${opcoes(cats, 'Contas fixas')}</select></label>
+              <label class="campo"><span>Paga com</span><select id="ct-forma">${opcoes(formas, 'Pix')}</select></label>
+              <button class="btn" type="submit">Adicionar conta</button>
+            </form>
+            <div class="msg" id="ct-msg" role="status"></div>
+            ${contas.length ? contas.map(c => `<div class="linha"><div class="esq"><div>${esc(c.nome)}</div><small>Dia ${c.dia}, ${esc(c.categoria)}, ${esc(c.forma)}</small></div><div class="dir"><span class="valor num">${brl(c.valor)}</span> ${btnRemover(c.id, 'removerConta')}</div></div>`).join('')
+              : '<p class="vazio">Nenhuma conta fixa cadastrada.</p>'}
+          </section>
+
+          <section class="secao">
+            <h3>Cartão de crédito</h3>
+            <p class="apoio-secao">${aj.cartao ? `A fatura fecha no dia ${aj.cartao.fecha} e vence no dia ${aj.cartao.vence}.` : 'Sem cartão cadastrado: compras no crédito saem do saldo no dia da compra.'} Com o cartão cadastrado, elas saem do saldo no vencimento da fatura.</p>
+            <form class="form-linha" id="f-cartao" novalidate>
+              <label class="campo"><span>Fecha no dia</span><input id="cc-fecha" type="number" inputmode="numeric" min="1" max="31" value="${aj.cartao?.fecha || ''}" placeholder="3"></label>
+              <label class="campo"><span>Vence no dia</span><input id="cc-vence" type="number" inputmode="numeric" min="1" max="31" value="${aj.cartao?.vence || ''}" placeholder="10"></label>
+              <button class="btn" type="submit">Salvar cartão</button>
+            </form>
+            ${aj.cartao ? '<button class="link perigo" type="button" id="cc-remover">Não uso cartão de crédito</button>' : ''}
+            <div class="msg" id="cc-msg" role="status"></div>
+          </section>
+        </div>
       </div>`;
 
     const enviarForm = async (form, msgSel, montar, okTxt) => {
       const msg = $(msgSel), btn = form.querySelector('button[type="submit"]');
-      const dados = montar(); if (!dados) return;
+      msg.className = 'msg erro'; msg.textContent = '';
+      const dados = montar(msg); if (!dados) return;
       btn.disabled = true; const rot = btn.textContent; btn.textContent = 'Salvando…';
       try {
         if (await gravar(dados.acao, dados.corpo)) { renderConteudo(); const m2 = $(msgSel); if (m2) { m2.className = 'msg info'; m2.textContent = okTxt; } }
       } catch (e) { msg.className = 'msg erro'; msg.textContent = e.message; btn.disabled = false; btn.textContent = rot; }
     };
+    const dia = id => { const n = Number($(id).value); return Number.isInteger(n) && n >= 1 && n <= 31 ? n : null; };
+    const erro = (msg, txt, foco) => { msg.textContent = txt; if (foco) $(foco).focus(); return null; };
 
-    $('#f-fixo').onsubmit = ev => {
-      ev.preventDefault();
-      enviarForm(ev.target, '#fx-msg', () => {
-        const valor = lerValor($('#fx-valor').value), mes = $('#fx-mes').value;
-        const msg = $('#fx-msg'); msg.className = 'msg erro';
-        if (!(valor > 0)) { msg.textContent = 'Digite o valor do fixo. Ex.: 4.500,00'; $('#fx-valor').focus(); return null; }
-        if (!/^\d{4}-\d{2}$/.test(mes)) { msg.textContent = 'Escolha o mês em que esse valor começa.'; return null; }
-        return { acao: 'salvarFixo', corpo: { valor, mes } };
-      }, 'Fixo salvo.');
-    };
-    $('#f-var').onsubmit = ev => {
-      ev.preventDefault();
-      enviarForm(ev.target, '#vr-msg', () => {
-        const valor = lerValor($('#vr-valor').value), descricao = $('#vr-desc').value.trim();
-        const msg = $('#vr-msg'); msg.className = 'msg erro';
-        if (descricao.length < 2) { msg.textContent = 'Diga de onde veio o valor. Ex.: Projeto NSF'; $('#vr-desc').focus(); return null; }
-        if (!(valor > 0)) { msg.textContent = 'Digite o valor. Ex.: 1.200,00'; $('#vr-valor').focus(); return null; }
-        return { acao: 'adicionarVariavel', corpo: { valor, descricao, mes: chave } };
-      }, 'Variável adicionado.');
-    };
+    $('#f-saldo').onsubmit = ev => { ev.preventDefault(); enviarForm(ev.target, '#sd-msg', msg => {
+      const valor = lerValor($('#sd-valor').value), data = $('#sd-data').value;
+      if (!isFinite(valor) || $('#sd-valor').value.trim() === '') return erro(msg, 'Digite o saldo. Se estiver negativo, use o sinal de menos.', '#sd-valor');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return erro(msg, 'Escolha o dia desse saldo.', '#sd-data');
+      return { acao: 'salvarAjustes', corpo: { saldo: { valor, data } } };
+    }, 'Saldo salvo.'); };
+
+    $('#f-fixo').onsubmit = ev => { ev.preventDefault(); enviarForm(ev.target, '#fx-msg', msg => {
+      const valor = lerValor($('#fx-valor').value), mes = $('#fx-mes').value, d = dia('#fx-dia');
+      if (!(valor > 0)) return erro(msg, 'Digite o valor do fixo. Ex.: 3.700,00', '#fx-valor');
+      if (!d) return erro(msg, 'O dia precisa ser de 1 a 31.', '#fx-dia');
+      if (!/^\d{4}-\d{2}$/.test(mes)) return erro(msg, 'Escolha o mês em que esse valor começa.');
+      return { acao: 'salvarFixo', corpo: { valor, mes, dia: d } };
+    }, 'Fixo salvo.'); };
+
+    $('#f-var').onsubmit = ev => { ev.preventDefault(); enviarForm(ev.target, '#vr-msg', msg => {
+      const valor = lerValor($('#vr-valor').value), descricao = $('#vr-desc').value.trim(), d = dia('#vr-dia');
+      if (descricao.length < 2) return erro(msg, 'Diga de onde veio o valor. Ex.: Projeto NSF', '#vr-desc');
+      if (!(valor > 0)) return erro(msg, 'Digite o valor. Ex.: 1.200,00', '#vr-valor');
+      if (!d) return erro(msg, 'O dia precisa ser de 1 a 31.', '#vr-dia');
+      return { acao: 'adicionarVariavel', corpo: { valor, descricao, mes: chave, dia: d } };
+    }, 'Variável adicionado.'); };
+
+    $('#f-conta').onsubmit = ev => { ev.preventDefault(); enviarForm(ev.target, '#ct-msg', msg => {
+      const nome = $('#ct-nome').value.trim(), valor = lerValor($('#ct-valor').value), d = dia('#ct-dia');
+      if (nome.length < 2) return erro(msg, 'Dê um nome à conta. Ex.: Aluguel', '#ct-nome');
+      if (!(valor > 0)) return erro(msg, 'Digite o valor da conta.', '#ct-valor');
+      if (!d) return erro(msg, 'Diga o dia do mês em que ela vence (1 a 31).', '#ct-dia');
+      return { acao: 'salvarConta', corpo: { nome, valor, dia: d, categoria: $('#ct-cat').value, forma: $('#ct-forma').value } };
+    }, 'Conta adicionada.'); };
+
+    $('#f-cartao').onsubmit = ev => { ev.preventDefault(); enviarForm(ev.target, '#cc-msg', msg => {
+      const fecha = dia('#cc-fecha'), vence = dia('#cc-vence');
+      if (!fecha) return erro(msg, 'Diga o dia em que a fatura fecha.', '#cc-fecha');
+      if (!vence) return erro(msg, 'Diga o dia em que a fatura vence.', '#cc-vence');
+      return { acao: 'salvarAjustes', corpo: { cartao: { fecha, vence } } };
+    }, 'Cartão salvo.'); };
+
+    const ccRem = $('#cc-remover');
+    if (ccRem) ccRem.onclick = async () => { ccRem.disabled = true; try { if (await gravar('salvarAjustes', { cartao: null })) renderConteudo(); } catch (e) { ccRem.textContent = e.message; } };
+
     // remover em dois toques, sem diálogo
     $$('[data-remover]').forEach(b => b.onclick = async () => {
       if (b.dataset.confirmar !== '1') { b.dataset.confirmar = '1'; b.textContent = 'Confirmar remoção'; setTimeout(() => { if (b.isConnected) { b.dataset.confirmar = ''; b.textContent = 'Remover'; } }, 4000); return; }
       b.disabled = true; b.textContent = 'Removendo…';
-      try { if (await gravar('removerReceita', { id: b.dataset.remover })) renderConteudo(); }
+      try { if (await gravar(b.dataset.acaoRemover, { id: b.dataset.remover })) renderConteudo(); }
       catch (e) { b.disabled = false; b.textContent = e.message; }
     });
   }

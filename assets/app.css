@@ -552,3 +552,8 @@ details.fd[open] .fd-linha { padding-bottom: 4px; }
   max-width: calc(100vw - 32px); transition: opacity var(--mov-curto), transform var(--mov-medio) var(--mov-sai);
 }
 .aviso-rapido.visivel { opacity: 1; transform: translate(-50%, 0); }
+
+/* iOS: campo de data não pode passar da largura do formulário */
+.campo { min-width: 0; }
+.campo input[type="date"], .campo input[type="month"] { -webkit-appearance: none; appearance: none; display: block; min-width: 0; max-width: 100%; text-align: left; }
+.campo input[type="date"]::-webkit-date-and-time-value, .campo input[type="month"]::-webkit-date-and-time-value { text-align: left; }

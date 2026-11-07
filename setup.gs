@@ -45,9 +45,9 @@ const SEG = {
   conviteHoras: 48
 };
 
-const VERSAO = '2.0.0';
+const VERSAO = '2.1.0';
 
-const ABA = { respostas: 'Respostas', lanc: 'Lançamentos', tetos: 'Tetos', resumo: 'Resumo', links: 'Links' };
+const ABA = { respostas: 'Respostas', lanc: 'Lançamentos', tetos: 'Tetos', resumo: 'Resumo', links: 'Links', receitas: 'Receitas' };
 
 const TITULO = {
   valor: 'Valor (R$)',
@@ -76,7 +76,10 @@ const ROTAS = {
   sair: c => Auth.sair(c),
   pedirCodigo: c => Auth.pedirCodigo(c),
   redefinir: c => Auth.redefinir(c),
-  dados: c => { const s = Sessao.validar(c.token); return Dados.painel(s); }
+  dados: c => { const s = Sessao.validar(c.token); return Dados.painel(s); },
+  salvarFixo: c => { const s = Sessao.validar(c.token); Receitas.salvarFixo(c, s); return Dados.painel(s); },
+  adicionarVariavel: c => { const s = Sessao.validar(c.token); Receitas.adicionarVariavel(c, s); return Dados.painel(s); },
+  removerReceita: c => { const s = Sessao.validar(c.token); Receitas.remover(c); return Dados.painel(s); }
 };
 
 function doPost(e) {
@@ -135,6 +138,19 @@ const V = {
     const s = String(v || '');
     if (!/^[a-f0-9]{64}$/.test(s)) throw new ApiErro('sessao_expirada', 'Sua sessão terminou. Entre de novo.');
     return s;
+  },
+  mes(v) {
+    const s = String(v || '');
+    if (!/^20\d{2}-(0[1-9]|1[0-2])$/.test(s)) throw new ApiErro('mes_invalido', 'Escolha um mês válido.');
+    return s;
+  },
+  valor(v) {
+    const n = typeof v === 'number' ? v : Number(String(v || '').replace(/\./g, '').replace(',', '.'));
+    if (!isFinite(n) || n <= 0 || n > 10000000) throw new ApiErro('valor_invalido', 'Digite um valor maior que zero.');
+    return Math.round(n * 100) / 100;
+  },
+  texto(v, max) {
+    return String(v || '').replace(/[<>]/g, '').trim().slice(0, max);
   },
   codigo(v) {
     const s = String(v || '').replace(/\D/g, '');
@@ -358,6 +374,73 @@ const Auth = {
 };
 
 /* =====================================================================
+   RECEITAS  (aba Receitas: ID | Mês | Tipo | Descrição | Valor | Lançado por | Criado em)
+   Fixo vale a partir do mês informado até o próximo registro de fixo.
+   ===================================================================== */
+
+const Receitas = {
+  CAB: ['ID', 'Mês', 'Tipo', 'Descrição', 'Valor', 'Lançado por', 'Criado em'],
+  aba() {
+    const ss = Dados.planilha();
+    let a = ss.getSheetByName(ABA.receitas);
+    if (!a) {
+      a = ss.insertSheet(ABA.receitas);
+      a.getRange(1, 1, 1, this.CAB.length).setValues([this.CAB]).setFontWeight('bold').setBackground('#E8EAF6');
+      a.setFrozenRows(1);
+      a.getRange('A:B').setNumberFormat('@');
+      a.getRange('E2:E').setNumberFormat('"R$" #,##0.00');
+      a.setColumnWidths(1, 7, 130);
+    }
+    return a;
+  },
+  listar() {
+    const a = Dados.planilha().getSheetByName(ABA.receitas);
+    if (!a) return [];
+    return a.getDataRange().getValues().slice(1)
+      .filter(l => l[0] && l[1])
+      .map(l => ({
+        id: String(l[0]),
+        mes: l[1] instanceof Date ? Utilities.formatDate(l[1], CONFIG.fuso, 'yyyy-MM') : String(l[1]),
+        tipo: String(l[2]) === 'Fixo' ? 'fixo' : 'variavel',
+        descricao: String(l[3] || ''),
+        valor: Number(l[4]) || 0
+      }));
+  },
+  inserir(mes, tipo, descricao, valor, sessao) {
+    const a = this.aba();
+    const id = aleatorio_().slice(0, 12);
+    const linha = a.getLastRow() + 1;
+    a.getRange(linha, 1, 1, 2).setNumberFormat('@');
+    a.getRange(linha, 1, 1, 7).setValues([[id, mes, tipo, descricao, valor, sessao.nome, new Date()]]);
+    return id;
+  },
+  salvarFixo(c, sessao) {
+    const mes = V.mes(c.mes), valor = V.valor(c.valor);
+    comTrava_(() => {
+      // um fixo por mês: substitui se já houver registro naquele mês
+      const a = this.aba(), vals = a.getDataRange().getValues();
+      for (let i = vals.length - 1; i >= 1; i--) if (String(vals[i][1]) === mes && String(vals[i][2]) === 'Fixo') a.deleteRow(i + 1);
+      this.inserir(mes, 'Fixo', V.texto(c.descricao, 80) || 'Salário fixo', valor, sessao);
+    });
+  },
+  adicionarVariavel(c, sessao) {
+    const mes = V.mes(c.mes), valor = V.valor(c.valor);
+    const descricao = V.texto(c.descricao, 80);
+    if (descricao.length < 2) throw new ApiErro('descricao_invalida', 'Diga de onde veio o valor (ex.: nome do projeto).');
+    comTrava_(() => this.inserir(mes, 'Variável', descricao, valor, sessao));
+  },
+  remover(c) {
+    const id = String(c.id || '');
+    if (!/^[a-f0-9]{12}$/.test(id)) throw new ApiErro('id_invalido', 'Registro não encontrado.');
+    comTrava_(() => {
+      const a = this.aba(), vals = a.getDataRange().getValues();
+      for (let i = vals.length - 1; i >= 1; i--) if (String(vals[i][0]) === id) { a.deleteRow(i + 1); return; }
+      throw new ApiErro('nao_encontrado', 'Esse registro já foi removido.');
+    });
+  }
+};
+
+/* =====================================================================
    DADOS DO PAINEL
    ===================================================================== */
 
@@ -382,7 +465,7 @@ const Dados = {
     const tetos = ss.getSheetByName(ABA.tetos).getDataRange().getValues().slice(1)
       .filter(l => l[0] && CONFIG.categorias.includes(String(l[0])))
       .map(l => ({ categoria: String(l[0]), teto: Number(l[1]) || 0 }));
-    return { atualizado: new Date().toISOString(), usuario: { nome: sessao.nome }, lancamentos, tetos };
+    return { atualizado: new Date().toISOString(), usuario: { nome: sessao.nome }, lancamentos, tetos, receitas: Receitas.listar() };
   }
 };
 

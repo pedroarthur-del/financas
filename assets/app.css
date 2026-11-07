@@ -243,3 +243,85 @@ button { cursor: pointer; }
 /* Ocultar valores (para abrir o painel em público) */
 .privado .valor, .privado .face { filter: blur(8px); user-select: none; }
 .privado .ritmo svg { filter: blur(3px); }
+
+/* =====================================================================
+   v2.1 · renda, balanço, previsões
+   ===================================================================== */
+.barra-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.barra-nav .mes { margin-bottom: 0; }
+.abas.abas-painel { margin: 0; min-width: 210px; }
+
+/* medidor renda x gasto */
+.medidor { position: relative; height: 18px; background: var(--papel-2); border-radius: 4px; overflow: hidden; margin: 4px 0 16px; }
+.medidor i, .trilho i { position: absolute; top: 0; bottom: 0; left: 0; }
+.medidor .m-gasto { background: var(--tinta); }
+.medidor .m-gasto.excesso, .medidor .m-prev.excesso { background-color: var(--excesso); }
+.medidor .m-prev, .trilho .t-prev {
+  background: repeating-linear-gradient(135deg, var(--tinta-2) 0 2px, transparent 2px 6px);
+  opacity: .75;
+}
+.medidor .m-prev.excesso { background: repeating-linear-gradient(135deg, var(--excesso) 0 2px, transparent 2px 6px); }
+.m-marco, .t-marco { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--tinta); }
+.medidor .m-marco { top: 0; bottom: 0; width: 3px; background: var(--papel); }
+
+.numeros { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 20px; }
+@media (min-width: 860px) { .numeros { grid-template-columns: repeat(4, 1fr); } }
+.numeros dt { font-size: 13px; color: var(--tinta-2); }
+.numeros dd { font-size: 22px; font-weight: 700; font-stretch: 112%; font-variation-settings: "wdth" 112; line-height: 1.25; }
+.numeros dd b { font-weight: inherit; }
+.numeros dd.excesso { color: var(--excesso); }
+.numeros dd.folga { color: var(--folga); }
+.numeros small { font-size: 13px; color: var(--tinta-2); }
+
+.legenda-medidor { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--tinta-2); margin-top: 12px; }
+.legenda-medidor span::before { content: ""; display: inline-block; width: 14px; height: 8px; border-radius: 2px; vertical-align: -1px; margin-right: 6px; background: var(--tinta); }
+.legenda-medidor .lg-prev::before { background: repeating-linear-gradient(135deg, var(--tinta-2) 0 2px, transparent 2px 5px); }
+.legenda-medidor .lg-teto::before { width: 2px; height: 12px; vertical-align: -2px; }
+.legenda-medidor .lg-renda::before { background: var(--guilhoche); opacity: .45; }
+
+/* ajustes */
+.ajustes { list-style: none; display: grid; gap: 10px; }
+.ajustes li { padding-left: 14px; border-left: 3px solid var(--linha); font-size: 15px; max-width: 72ch; }
+.ajustes li.excesso { border-left-color: var(--excesso); }
+.ajustes li.atencao { border-left-color: var(--atencao); }
+
+/* categorias com previsão e teto */
+.trilho { overflow: visible; }
+.trilho .t-gasto { background: var(--folga); border-radius: 3px 0 0 3px; }
+.trilho .t-gasto.atencao { background: var(--atencao); }
+.trilho .t-gasto.excesso { background: var(--excesso); }
+.trilho .t-gasto.sem-teto { background: var(--tinta-2); }
+.trilho .t-prev.excesso { background: repeating-linear-gradient(135deg, var(--excesso) 0 2px, transparent 2px 6px); opacity: .9; }
+.trilho .t-prev.atencao { background: repeating-linear-gradient(135deg, var(--atencao) 0 2px, transparent 2px 6px); opacity: .9; }
+.trilho .t-prev:not(.excesso):not(.atencao) { background: repeating-linear-gradient(135deg, var(--folga) 0 2px, transparent 2px 6px); }
+.cat .linha2 { font-size: 13px; color: var(--tinta-2); margin-top: 6px; }
+
+/* mês a mês */
+.hist { display: grid; grid-template-columns: 54px 1fr 92px 92px 92px; gap: 10px; align-items: center; padding: 8px 0; font-size: 14px; border-top: 1px solid var(--linha); }
+.hist.cab { border-top: 0; font-size: 12px; color: var(--tinta-2); padding-bottom: 2px; }
+.hist.cab span, .h-num { text-align: right; }
+.hist.sel .h-mes { font-weight: 700; }
+.h-mes small { display: block; font-size: 11px; color: var(--tinta-2); font-weight: 400; }
+.h-barras { display: grid; gap: 3px; }
+.h-barras i { display: block; height: 7px; border-radius: 2px; min-width: 2px; }
+.h-renda { background: var(--guilhoche); opacity: .45; }
+.h-gasto { background: var(--tinta); }
+.h-gasto.excesso { background: var(--excesso); }
+.h-num.excesso { color: var(--excesso); }
+.h-num.folga { color: var(--folga); }
+@media (max-width: 560px) {
+  .hist { grid-template-columns: 46px 1fr 1fr 1fr; }
+  .h-barras { grid-column: 1 / -1; order: 5; }
+  .hist.cab span:nth-child(2) { display: none; }
+  .hist .h-num { font-size: 13px; }
+}
+.previsao { margin-top: 14px; font-size: 15px; max-width: 72ch; }
+
+/* aba renda */
+.secao h4 { font-size: 14px; font-weight: 650; margin: 18px 0 4px; color: var(--tinta-2); }
+.apoio-secao { font-size: 14px; color: var(--tinta-2); margin: -6px 0 14px; max-width: 60ch; }
+.form-linha { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; align-items: end; }
+.form-linha .btn { grid-column: 1 / -1; margin-bottom: 4px; }
+@media (min-width: 560px) { .form-linha { grid-template-columns: 1.3fr 1fr auto; } .form-linha .btn { grid-column: auto; margin-bottom: 14px; } }
+.link.perigo { color: var(--excesso); font-size: 13px; padding: 4px 0 4px 10px; }
+.linha .dir { display: flex; align-items: center; gap: 4px; }

@@ -10,6 +10,12 @@ Painel pessoal de gastos: Google Forms → Planilha → Apps Script (API com log
 | `config.js` | Único arquivo a editar: URL `/exec` do Apps Script |
 | `index.html`, `assets/` | Telas de acesso e painel |
 
+## Renda e previsões
+
+- Aba **Renda** no painel: salário fixo (vale a partir do mês escolhido até mudar) e variáveis por mês (projetos, bônus). Fica na aba Receitas da planilha.
+- O painel mostra renda x gasto, sobra prevista, % da renda por categoria, previsão de fim de mês por categoria e o que ajustar para caber no orçamento.
+- Previsão: nos primeiros 10 dias do mês mistura o ritmo atual com a média dos 3 meses anteriores. Moradia, Contas fixas, Assinaturas e Educação são previstas pelo teto.
+
 ## Segurança
 
 - A senha não sai do aparelho: o navegador deriva uma chave com PBKDF2-SHA256 (600 mil iterações); o servidor guarda só um hash dessa chave com sal aleatório.

@@ -160,6 +160,7 @@
     dados: ss.get(K.cache),
     ref: new Date(hoje.getFullYear(), hoje.getMonth(), 1),
     privado: ls.get(K.privado) === '1',
+    aba: 'painel',
     redefinirEmail: ''
   };
 
@@ -351,23 +352,76 @@
     Sessao.salvar(s);
     Ociosidade.iniciar();
     E.dados = null;
+    E.aba = 'painel';
     E.ref = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
     telaPainel();
     carregarDados();
   }
 
   /* ============================== PAINEL ============================ */
+  // Categorias pagas uma vez no mês: a previsão usa o teto (ou a média), não o ritmo diário
+  const FIXAS = ['Moradia', 'Contas fixas', 'Assinaturas', 'Educação'];
+  const chaveMes = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+  const somaMes = (chave, cat) => (E.dados?.lancamentos || [])
+    .filter(l => String(l.data).startsWith(chave) && (!cat || l.categoria === cat))
+    .reduce((s, l) => s + l.valor, 0);
+  const mesesAntes = (d, n) => Array.from({ length: n }, (_, i) => new Date(d.getFullYear(), d.getMonth() - 1 - i, 1));
+  const temLancamento = chave => (E.dados?.lancamentos || []).some(l => String(l.data).startsWith(chave));
+  const mesCurto = d => MESES[d.getMonth()].slice(0, 3) + '/' + String(d.getFullYear()).slice(2);
+  const nomeMes = d => { const n = MESES[d.getMonth()]; return n[0].toUpperCase() + n.slice(1) + ' de ' + d.getFullYear(); };
+
+  function renda(chave) {
+    const R = E.dados?.receitas || [];
+    const fixoReg = R.filter(r => r.tipo === 'fixo' && r.mes <= chave).sort((a, b) => b.mes.localeCompare(a.mes))[0] || null;
+    const variaveis = R.filter(r => r.tipo === 'variavel' && r.mes === chave);
+    const fixo = fixoReg ? fixoReg.valor : 0;
+    const variavel = variaveis.reduce((s, r) => s + r.valor, 0);
+    return { fixo, fixoReg, variaveis, variavel, total: fixo + variavel };
+  }
+
+  /** Média de gasto da categoria nos meses anteriores que têm lançamentos (até 3). */
+  function mediaHistorica(ref, cat) {
+    const meses = mesesAntes(ref, 6).map(chaveMes).filter(temLancamento).slice(0, 3);
+    if (!meses.length) return null;
+    return meses.reduce((s, k) => s + somaMes(k, cat), 0) / meses.length;
+  }
+
+  /** Previsão de fim de mês por categoria. Mistura o ritmo atual com o histórico no começo do mês. */
+  function prever(cat, gasto, teto, ctx) {
+    if (!ctx.atual) return gasto;
+    const hist = mediaHistorica(E.ref, cat);
+    if (FIXAS.includes(cat)) return Math.max(gasto, teto || hist || 0);
+    const ritmo = gasto / ctx.dia;
+    const ritmoHist = hist !== null ? hist / ctx.diasMes : ritmo;
+    const peso = Math.min(1, ctx.dia / 10); // nos 10 primeiros dias o histórico pesa mais
+    const taxa = ritmo * peso + ritmoHist * (1 - peso);
+    return gasto + taxa * (ctx.diasMes - ctx.dia);
+  }
+
   async function carregarDados() {
     const s = Sessao.atual(); if (!s) return sair();
     const rot = $('#atualizado'); if (rot) rot.textContent = 'Atualizando…';
     try {
       E.dados = await api('dados', { token: s.token });
       ss.set(K.cache, E.dados);
-      renderPainel();
+      renderConteudo();
     } catch (e) {
       if (e.codigo === 'sessao_expirada') return sair(e.message);
-      if (E.dados) { renderPainel(); if ($('#atualizado')) $('#atualizado').textContent = e.message; }
+      if (E.dados) { renderConteudo(); if ($('#atualizado')) $('#atualizado').textContent = e.message; }
       else if ($('#conteudo')) $('#conteudo').innerHTML = `<div class="faixa-aviso">${esc(e.message)}</div>`;
+    }
+  }
+
+  /** Escrita autenticada: o servidor devolve os dados já atualizados. */
+  async function gravar(acao, dados) {
+    const s = Sessao.atual(); if (!s) return sair();
+    try {
+      E.dados = await api(acao, Object.assign({ token: s.token }, dados));
+      ss.set(K.cache, E.dados);
+      return true;
+    } catch (e) {
+      if (e.codigo === 'sessao_expirada') { sair(e.message); return false; }
+      throw e;
     }
   }
 
@@ -384,11 +438,17 @@
             <button class="ico" id="b-sair" type="button" aria-label="Sair" title="Sair">${ICONE.sair}</button>
           </div>
         </header>
-        <nav class="mes" aria-label="Escolher mês">
-          <button class="ico" id="b-ant" type="button" aria-label="Mês anterior">${ICONE.ant}</button>
-          <h2 id="mes-nome"></h2>
-          <button class="ico" id="b-prox" type="button" aria-label="Próximo mês">${ICONE.prox}</button>
-        </nav>
+        <div class="barra-nav">
+          <nav class="mes" aria-label="Escolher mês">
+            <button class="ico" id="b-ant" type="button" aria-label="Mês anterior">${ICONE.ant}</button>
+            <h2 id="mes-nome"></h2>
+            <button class="ico" id="b-prox" type="button" aria-label="Próximo mês">${ICONE.prox}</button>
+          </nav>
+          <div class="abas abas-painel" role="tablist" aria-label="Seções">
+            <button type="button" role="tab" data-aba="painel" aria-selected="${E.aba === 'painel'}">Painel</button>
+            <button type="button" role="tab" data-aba="renda" aria-selected="${E.aba === 'renda'}">Renda</button>
+          </div>
+        </div>
         <div id="conteudo"><p class="carregando">Buscando seus lançamentos, ${esc(s?.nome || '')}…</p></div>
         <footer class="rodape">
           <span id="atualizado"></span>
@@ -405,24 +465,43 @@
     $('#b-ant').onclick = () => mudarMes(-1);
     $('#b-prox').onclick = () => mudarMes(1);
     $('#b-atualizar').onclick = carregarDados;
-    if (E.dados) renderPainel();
+    $$('[data-aba]').forEach(b => b.onclick = () => irPara(b.dataset.aba));
+    if (E.dados) renderConteudo();
   }
 
-  const nomeMes = d => { const n = MESES[d.getMonth()]; return n[0].toUpperCase() + n.slice(1) + ' de ' + d.getFullYear(); };
+  function irPara(aba) {
+    E.aba = aba;
+    $$('[data-aba]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.aba === aba)));
+    renderConteudo();
+    scrollTo({ top: 0 });
+  }
+
   function mudarMes(delta) {
     E.ref = new Date(E.ref.getFullYear(), E.ref.getMonth() + delta, 1);
     $('#mes-nome').textContent = nomeMes(E.ref);
-    if (E.dados) renderPainel();
+    if (E.dados) renderConteudo();
+  }
+
+  function renderConteudo() {
+    if (!E.dados || !$('#conteudo')) return;
+    if (E.aba === 'renda') renderRenda(); else renderPainel();
+    $$('[data-largura]').forEach(el => { el.style.width = el.dataset.largura + '%'; });  // CSSOM: a CSP bloqueia style=""
+    $$('[data-inicio]').forEach(el => { el.style.left = el.dataset.inicio + '%'; });
+    const at = E.dados.atualizado ? new Date(E.dados.atualizado) : null;
+    if ($('#atualizado')) $('#atualizado').textContent = at ? `Atualizado às ${pad(at.getHours())}:${pad(at.getMinutes())} de ${pad(at.getDate())}/${pad(at.getMonth() + 1)}` : '';
   }
 
   function valorDeFace(v, excesso) {
     const [i, c] = Math.abs(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).split(',');
     return `<p class="face num${excesso ? ' excesso' : ''}" aria-label="${brl(v)}"><span class="rs" aria-hidden="true">R$</span><span aria-hidden="true">${i}</span><span class="cent" aria-hidden="true">,${c}</span></p>`;
   }
+  const v = x => `<b class="valor num">${brl(x)}</b>`;
+  const w = (x, escala) => (escala > 0 ? Math.max(0, Math.min(100, x / escala * 100)) : 0).toFixed(1);
 
+  /* ------------------------- aba PAINEL ------------------------- */
   function renderPainel() {
-    const D = E.dados; if (!D || !$('#conteudo')) return;
-    const y = E.ref.getFullYear(), m = E.ref.getMonth(), chave = `${y}-${pad(m + 1)}`;
+    const D = E.dados;
+    const y = E.ref.getFullYear(), m = E.ref.getMonth(), chave = chaveMes(E.ref);
     const mesTxt = MESES[m];
     const lanc = (D.lancamentos || []).filter(l => String(l.data).startsWith(chave));
     const tetos = D.tetos || [];
@@ -433,99 +512,279 @@
     const futuro = E.ref > hoje;
     const dia = atual ? hoje.getDate() : futuro ? 0 : diasMes;
     const restam = atual ? diasMes - dia + 1 : 0;
+    const ctx = { atual, dia, diasMes };
 
     const total = lanc.reduce((s, l) => s + l.valor, 0);
     const teto = tetos.reduce((s, t) => s + (t.teto || 0), 0);
-    const proj = atual && dia > 0 ? total / dia * diasMes : total;
+    const R = renda(chave);
 
-    // ---------- herói: a resposta do mês em uma frase ----------
+    // ---------- categorias, com previsão de fim de mês ----------
+    const porCat = {};
+    lanc.forEach(l => { porCat[l.categoria] = (porCat[l.categoria] || 0) + l.valor; });
+    const cats = [...new Set([...tetos.map(t => t.categoria), ...Object.keys(porCat)])]
+      .map(c => { const g = porCat[c] || 0, t = tetoDe[c] || 0; return { c, g, t, p: prever(c, g, t, ctx) }; })
+      .filter(x => x.g > 0 || x.t > 0);
+    const proj = futuro ? 0 : cats.reduce((s, x) => s + x.p, 0);
+    cats.sort((a, b) => (b.t ? b.p / b.t : -1) - (a.t ? a.p / a.t : -1) || b.p - a.p);
+
+    // ---------- herói ----------
     let heroi;
-    const v = x => `<b class="valor num">${brl(x)}</b>`;
     if (futuro) {
       heroi = `<p class="frase">${nomeMes(E.ref)} ainda não começou.</p>${valorDeFace(0)}<p class="depois">Nenhum gasto lançado.</p>`;
     } else if (atual && teto > 0 && total <= teto) {
-      heroi = `<p class="frase">Para fechar ${mesTxt} dentro do teto, você pode gastar</p>
+      heroi = `<p class="frase">Para fechar ${mesTxt} dentro do orçamento, você pode gastar</p>
         ${valorDeFace((teto - total) / restam)}
         <p class="depois">por dia${restam > 1 ? `, nos próximos ${restam} dias` : ', hoje'}.</p>
-        <p class="meta">Você gastou ${v(total)} de ${v(teto)} (${pct(total / teto)}). No ritmo atual, o mês fecha em ${v(proj)}${proj > teto ? ', acima do teto' : ''}.</p>`;
+        <p class="meta">Você gastou ${v(total)} de ${v(teto)} (${pct(total / teto)}). A previsão para o mês é ${v(proj)}${proj > teto ? ', acima do orçamento' : ''}.</p>`;
     } else if (atual && teto > 0) {
-      heroi = `<p class="frase">Você passou do teto de ${mesTxt} em</p>
+      heroi = `<p class="frase">Você passou do orçamento de ${mesTxt} em</p>
         ${valorDeFace(total - teto, true)}
         <p class="depois">Cada novo gasto até o dia ${diasMes} aumenta essa diferença.</p>
-        <p class="meta">Gasto: ${v(total)}. Teto: ${v(teto)}. No ritmo atual, o mês fecha em ${v(proj)}.</p>`;
+        <p class="meta">Gasto: ${v(total)}. Orçamento: ${v(teto)}. Previsão para o mês: ${v(proj)}.</p>`;
     } else if (teto > 0) {
       const dif = total - teto;
       heroi = `<p class="frase">Em ${mesTxt} você gastou</p>${valorDeFace(total, dif > 0)}
-        <p class="depois">${dif > 0 ? `<span class="valor">${brl(dif)}</span> acima do teto de <span class="valor">${brl(teto)}</span>.` : `${pct(total / teto)} do teto de <span class="valor">${brl(teto)}</span>.`}</p>`;
+        <p class="depois">${dif > 0 ? `<span class="valor">${brl(dif)}</span> acima do orçamento de <span class="valor">${brl(teto)}</span>.` : `${pct(total / teto)} do orçamento de <span class="valor">${brl(teto)}</span>.`}</p>`;
     } else {
       heroi = `<p class="frase">Em ${mesTxt} você gastou</p>${valorDeFace(total)}
         <p class="depois">Defina os tetos na aba Tetos da planilha para ver quanto ainda pode gastar por dia.</p>`;
     }
 
+    // ---------- balanço: renda x gasto ----------
+    let balanco;
+    if (!R.total) {
+      balanco = `<p class="vazio">Cadastre sua renda de ${mesTxt} para ver quanto sobra e quanto cada gasto pesa no que você ganha.</p>
+        <button class="btn" type="button" data-aba-ir="renda">Lançar renda</button>`;
+    } else {
+      const gastoRef = atual ? proj : total;
+      const sobra = R.total - gastoRef;
+      const escala = Math.max(R.total, gastoRef, 1);
+      balanco = `
+        <div class="medidor" role="img" aria-label="Gasto comparado à renda do mês">
+          <i class="m-gasto${total > R.total ? ' excesso' : ''}" data-largura="${w(total, escala)}"></i>
+          ${atual && proj > total ? `<i class="m-prev${proj > R.total ? ' excesso' : ''}" data-inicio="${w(total, escala)}" data-largura="${w(proj - total, escala)}"></i>` : ''}
+          ${gastoRef > R.total ? `<b class="m-marco" data-inicio="${w(R.total, escala)}" title="Renda do mês"></b>` : ''}
+        </div>
+        <dl class="numeros">
+          <div><dt>Renda</dt><dd>${v(R.total)}</dd><small>Fixo <span class="valor">${brl(R.fixo)}</span>${R.variavel ? `, variável <span class="valor">${brl(R.variavel)}</span>` : ''}</small></div>
+          <div><dt>Gasto ${atual ? 'até agora' : 'no mês'}</dt><dd>${v(total)}</dd><small>${pct(total / R.total)} da renda</small></div>
+          ${atual ? `<div><dt>Gasto previsto</dt><dd>${v(proj)}</dd><small>${pct(proj / R.total)} da renda</small></div>` : ''}
+          <div><dt>${atual ? 'Sobra prevista' : 'Sobrou'}</dt><dd class="${sobra < 0 ? 'excesso' : 'folga'}">${v(sobra)}</dd><small>${sobra < 0 ? 'faltou dinheiro' : pct(sobra / R.total) + ' da renda'}</small></div>
+        </dl>
+        <p class="legenda-medidor"><span class="lg-gasto">Gasto</span>${atual ? '<span class="lg-prev">Previsto até o fim do mês</span>' : ''}</p>`;
+    }
+
+    // ---------- o que ajustar (só no mês atual) ----------
+    let ajustes = '';
+    if (atual) {
+      const itens = [];
+      const estouro = cats.filter(x => x.t && x.p > x.t + 0.5);
+      const folgas = cats.filter(x => x.t && x.t - x.p > 0.5).map(x => ({ c: x.c, f: x.t - x.p })).sort((a, b) => b.f - a.f);
+      const folgaTotal = folgas.reduce((s, x) => s + x.f, 0);
+      const excessoTotal = estouro.reduce((s, x) => s + (x.p - x.t), 0);
+
+      if (R.total && proj > R.total) itens.push(`<li class="excesso">No ritmo atual, você vai gastar ${v(proj - R.total)} a mais do que ganha em ${mesTxt}.</li>`);
+      else if (R.total && (R.total - proj) / R.total < .1) itens.push(`<li class="atencao">A sobra prevista é de só ${pct(Math.max(0, R.total - proj) / R.total)} da renda.</li>`);
+      if (R.total && teto > R.total) itens.push(`<li class="atencao">Seus tetos somam ${v(teto)}, mais do que a renda de ${mesTxt} (${v(R.total)}). Mesmo cumprindo todos, falta dinheiro.</li>`);
+
+      estouro.forEach(x => {
+        const ritmo = x.g / dia;
+        if (x.g <= x.t) {
+          const limite = (x.t - x.g) / restam;
+          itens.push(`<li><b>${esc(x.c)}</b> deve fechar em ${v(x.p)}, ${v(x.p - x.t)} acima do teto. Para caber, o limite daqui em diante é ${v(limite)} por dia${ritmo > 0 ? ` (sua média está em ${v(ritmo)} por dia)` : ''}.</li>`);
+        } else {
+          itens.push(`<li><b>${esc(x.c)}</b> já passou do teto em ${v(x.g - x.t)}. Para não aumentar a diferença, segure essa categoria até o fim do mês.</li>`);
+        }
+      });
+      if (estouro.length) {
+        if (folgas.length) {
+          const lista = folgas.slice(0, 3).map(x => `${esc(x.c)} (${v(x.f)})`).join(', ');
+          itens.push(`<li>Folga prevista em outras categorias: ${lista}. ${folgaTotal >= excessoTotal
+            ? 'Ela cobre o excesso: para manter o gasto onde estourou, você precisa abrir mão desse valor nelas.'
+            : `Ela não cobre tudo: mesmo remanejando, faltam ${v(excessoTotal - folgaTotal)}.`}</li>`);
+        } else {
+          itens.push('<li>Nenhuma outra categoria tem folga prevista para compensar. O ajuste precisa vir das próprias categorias que estouraram.</li>');
+        }
+      }
+      ajustes = `<section class="secao"><h3>O que ajustar</h3>${itens.length
+        ? `<ul class="ajustes">${itens.join('')}</ul>`
+        : '<p class="vazio">Tudo dentro do previsto para este mês.</p>'}</section>`;
+    }
+
     // ---------- categorias ----------
-    const porCat = {};
-    lanc.forEach(l => { porCat[l.categoria] = (porCat[l.categoria] || 0) + l.valor; });
-    const cats = [...new Set([...tetos.map(t => t.categoria), ...Object.keys(porCat)])]
-      .map(c => ({ c, g: porCat[c] || 0, t: tetoDe[c] || 0 }))
-      .filter(x => x.g > 0 || x.t > 0)
-      .sort((a, b) => (b.t ? b.g / b.t : -1) - (a.t ? a.g / a.t : -1) || b.g - a.g);
-    const maior = Math.max(1, ...cats.map(x => x.g));
     const classe = r => r > 1 ? 'excesso' : r >= .8 ? 'atencao' : '';
-
-    const passou = cats.filter(x => x.t && x.g > x.t).map(x => esc(x.c));
-    const perto = cats.filter(x => x.t && x.g <= x.t && x.g / x.t >= .8).map(x => esc(x.c));
-    const alertas = (passou.length ? `<p class="alerta">Passou do teto: ${passou.join(', ')}.</p>` : '')
-      + (perto.length ? `<p class="alerta atencao">Acima de 80% do teto: ${perto.join(', ')}.</p>` : '');
-
     const htmlCats = cats.length ? cats.map(x => {
-      const r = x.t ? x.g / x.t : null;
-      const larg = r !== null ? Math.min(r, 1) * 100 : x.g / maior * 100;
-      const dir = r !== null
-        ? `<b class="valor num">${brl(x.g)}</b> de <span class="valor num">${brl(x.t)}</span> <span class="pct ${classe(r)}">${pct(r)}</span>`
-        : `<b class="valor num">${brl(x.g)}</b> sem teto`;
-      return `<div class="cat"><div class="linha1"><span>${esc(x.c)}</span><span class="v">${dir}</span></div>
-        <div class="trilho"><i class="${r === null ? 'sem-teto' : classe(r)}" data-largura="${larg.toFixed(1)}"></i></div></div>`;
+      const escala = Math.max(x.t, x.p, x.g, 1);
+      const rP = x.t ? x.p / x.t : null;
+      const topo = v(x.g);
+      const partes = [];
+      if (atual && x.p > x.g + 0.5) partes.push(`Previsto <span class="valor num">${brl(x.p)}</span>${x.t ? `, <span class="pct ${classe(rP)}">${pct(rP)} do teto</span>` : ''}`);
+      else if (x.t) partes.push(`<span class="pct ${classe(x.g / x.t)}">${pct(x.g / x.t)} do teto</span>`);
+      if (!x.t) partes.push('Sem teto');
+      if (R.total) partes.push(`${pct((atual ? x.p : x.g) / R.total)} da renda`);
+      if (atual && FIXAS.includes(x.c)) partes.push('Conta do mês: a previsão usa o teto');
+      return `<div class="cat"><div class="linha1"><span>${esc(x.c)}</span><span class="v">${topo}</span></div>
+        <div class="trilho">
+          <i class="t-gasto ${x.t ? classe(x.g / x.t) : 'sem-teto'}" data-largura="${w(x.g, escala)}"></i>
+          ${atual && x.p > x.g ? `<i class="t-prev ${x.t ? classe(rP) : 'sem-teto'}" data-inicio="${w(x.g, escala)}" data-largura="${w(x.p - x.g, escala)}"></i>` : ''}
+          ${x.t ? `<b class="t-marco" data-inicio="${w(x.t, escala)}" title="Teto ${brl(x.t)}"></b>` : ''}
+        </div>
+        <p class="linha2">${partes.join('. ')}.</p></div>`;
     }).join('') : '<p class="vazio">Nenhum gasto neste mês. Lance pelo formulário e toque em Atualizar.</p>';
 
-    // ---------- formas de pagamento ----------
+    // ---------- formas e últimos ----------
     const porForma = {};
     lanc.forEach(l => { const f = l.forma || 'Sem forma'; porForma[f] = (porForma[f] || 0) + l.valor; });
-    const formas = Object.entries(porForma).sort((a, b) => b[1] - a[1]);
-    const htmlFormas = formas.length ? formas.map(([f, val]) =>
+    const htmlFormas = Object.keys(porForma).length ? Object.entries(porForma).sort((a, b) => b[1] - a[1]).map(([f, val]) =>
       `<div class="linha"><div class="esq">${esc(f)}</div><div class="dir"><span class="valor num">${brl(val)}</span><small>${pct(val / total)}</small></div></div>`
     ).join('') : '<p class="vazio">Sem lançamentos.</p>';
-
-    // ---------- últimos ----------
-    const ult = [...lanc].sort((a, b) => String(b.data).localeCompare(String(a.data))).slice(0, 12);
+    const ult = [...lanc].sort((a, b) => String(b.data).localeCompare(String(a.data))).slice(0, 10);
     const htmlUlt = ult.length ? ult.map(l => {
       const [, mm, dd] = String(l.data).split('-');
       return `<div class="linha"><div class="esq"><div>${esc(l.descricao || l.categoria)}</div>
         <small>${dd}/${mm}, ${esc(l.categoria)}, ${esc(l.forma)}</small></div><div class="dir"><span class="valor num">${brl(l.valor)}</span></div></div>`;
     }).join('') : '<p class="vazio">Sem lançamentos.</p>';
 
+    // ---------- mês a mês ----------
+    const meses = [E.ref, ...mesesAntes(E.ref, 5)].reverse();
+    const linhasHist = meses.map(d => {
+      const k = chaveMes(d), r = renda(k).total;
+      const ehAtual = k === chaveMes(hoje);
+      const g = ehAtual ? proj || somaMes(k) : somaMes(k);
+      const sb = r - g;
+      return { d, k, r, g, sb, ehAtual, vazio: !r && !g };
+    });
+    const maxHist = Math.max(1, ...linhasHist.map(x => Math.max(x.r, x.g)));
+    const htmlHist = linhasHist.filter(x => !x.vazio).map(x => `
+      <div class="hist${x.k === chave ? ' sel' : ''}">
+        <span class="h-mes">${mesCurto(x.d)}${x.ehAtual ? '<small>previsão</small>' : ''}</span>
+        <div class="h-barras">
+          <i class="h-renda" data-largura="${w(x.r, maxHist)}"></i>
+          <i class="h-gasto${x.g > x.r && x.r ? ' excesso' : ''}" data-largura="${w(x.g, maxHist)}"></i>
+        </div>
+        <span class="h-num valor num">${brl(x.r)}</span>
+        <span class="h-num valor num">${brl(x.g)}</span>
+        <span class="h-num valor num ${x.r ? (x.sb < 0 ? 'excesso' : 'folga') : ''}">${x.r ? brl(x.sb) : '—'}</span>
+      </div>`).join('');
+
+    // previsão do próximo mês: fixo vigente + média do variável e do gasto nos últimos 3 meses
+    const prox = new Date(y, m + 1, 1);
+    const base3 = [E.ref, ...mesesAntes(E.ref, 2)].map(chaveMes);
+    const varMedia = base3.reduce((s, k) => s + renda(k).variavel, 0) / 3;
+    const fixoProx = renda(chaveMes(prox)).fixo;
+    const gastos3 = base3.map(k => k === chaveMes(hoje) ? proj : somaMes(k)).filter(g => g > 0);
+    const gastoMedio = gastos3.length ? gastos3.reduce((s, g) => s + g, 0) / gastos3.length : 0;
+    const previsao = (fixoProx || varMedia || gastoMedio) ? `<p class="previsao">Previsão para ${MESES[prox.getMonth()]}: renda de ${v(fixoProx + varMedia)}${varMedia ? ` (fixo mais a média do variável dos últimos 3 meses)` : ''} e gasto de ${v(gastoMedio)}, sobrando ${v(fixoProx + varMedia - gastoMedio)}.</p>` : '';
+
     $('#conteudo').innerHTML = `
       <div class="abertura">
         <section class="heroi" aria-label="Resumo do mês">${heroi}</section>
         ${!futuro ? `<section class="ritmo" id="ritmo" aria-label="Gasto acumulado no mês"><div id="ritmo-svg"></div>
-          <div class="legenda"><span>Gasto acumulado</span>${teto ? '<span class="l-ideal">Ritmo para fechar no teto</span>' : ''}</div></section>` : ''}
+          <div class="legenda"><span>Gasto acumulado</span>${teto ? '<span class="l-ideal">Ritmo para fechar no orçamento</span>' : ''}</div></section>` : ''}
       </div>
       ${faixa()}
+      <section class="secao"><h3>Quanto entra e quanto sai</h3>${balanco}</section>
+      ${ajustes}
       <div class="grade-secoes">
-        <section class="secao"><h3>Onde o dinheiro foi <small>gasto e teto</small></h3>${alertas}${htmlCats}</section>
+        <section class="secao"><h3>Onde o dinheiro foi <small>${atual ? 'gasto até agora' : 'gasto no mês'}</small></h3>${htmlCats}
+          ${cats.length ? `<p class="legenda-medidor"><span class="lg-gasto">Gasto</span>${atual ? '<span class="lg-prev">Previsto</span>' : ''}<span class="lg-teto">Teto</span></p>` : ''}</section>
         <div>
           <section class="secao"><h3>Como você pagou</h3>${htmlFormas}</section>
-          <section class="secao"><h3>Últimos lançamentos ${lanc.length > 12 ? `<small>12 de ${lanc.length}</small>` : ''}</h3>${htmlUlt}</section>
+          <section class="secao"><h3>Últimos lançamentos ${lanc.length > 10 ? `<small>10 de ${lanc.length}</small>` : ''}</h3>${htmlUlt}</section>
         </div>
-      </div>`;
+      </div>
+      <section class="secao"><h3>Mês a mês</h3>
+        ${htmlHist ? `<div class="hist cab"><span></span><span></span><span>Renda</span><span>Gasto</span><span>Sobra</span></div>${htmlHist}
+          <p class="legenda-medidor"><span class="lg-renda">Renda</span><span class="lg-gasto">Gasto</span></p>` : '<p class="vazio">Ainda não há meses com renda ou gasto.</p>'}
+        ${previsao}
+      </section>`;
 
+    $$('[data-aba-ir]').forEach(b => b.onclick = () => irPara(b.dataset.abaIr));
     E.grafico = futuro ? null : () => { const box = $('#ritmo-svg'); if (box) box.innerHTML = graficoRitmo(lanc, diasMes, dia, teto, box.clientWidth); };
     if (E.grafico) E.grafico();
+  }
 
-    // larguras via CSSOM (a CSP bloqueia style="" em HTML)
-    $$('[data-largura]').forEach(el => { el.style.width = el.dataset.largura + '%'; });
+  /* -------------------------- aba RENDA -------------------------- */
+  const lerValor = s => { const n = Number(String(s || '').replace(/[R$\s]/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')); return isFinite(n) ? n : NaN; };
 
-    const at = D.atualizado ? new Date(D.atualizado) : null;
-    if ($('#atualizado')) $('#atualizado').textContent = at ? `Atualizado às ${pad(at.getHours())}:${pad(at.getMinutes())} de ${pad(at.getDate())}/${pad(at.getMonth() + 1)}` : '';
+  function renderRenda() {
+    const chave = chaveMes(E.ref), mesTxt = MESES[E.ref.getMonth()];
+    const R = renda(chave);
+    const fixos = (E.dados.receitas || []).filter(r => r.tipo === 'fixo').sort((a, b) => b.mes.localeCompare(a.mes));
+    const base3 = [E.ref, ...mesesAntes(E.ref, 2)].map(chaveMes);
+    const media3 = base3.reduce((s, k) => s + renda(k).variavel, 0) / 3;
+    const nomeMesChave = k => { const [a, mm] = k.split('-').map(Number); return MESES[mm - 1] + ' de ' + a; };
+    const btnRemover = id => `<button class="link perigo" type="button" data-remover="${esc(id)}">Remover</button>`;
+
+    $('#conteudo').innerHTML = `
+      <section class="heroi" aria-label="Renda do mês">
+        <p class="frase">Sua renda em ${mesTxt}</p>
+        ${valorDeFace(R.total)}
+        <p class="depois">${R.total ? `Fixo <span class="valor">${brl(R.fixo)}</span>${R.variavel ? ` e variável <span class="valor">${brl(R.variavel)}</span>` : ', sem variável lançado'}.` : 'Nenhuma renda cadastrada para este mês.'}</p>
+      </section>
+      ${faixa()}
+      <div class="grade-secoes">
+        <section class="secao">
+          <h3>Salário fixo</h3>
+          <p class="apoio-secao">${R.fixoReg ? `Em vigor: ${v(R.fixoReg.valor)} desde ${nomeMesChave(R.fixoReg.mes)}.` : 'Nenhum fixo em vigor neste mês.'} O fixo se repete todo mês até você cadastrar um valor novo.</p>
+          <form class="form-linha" id="f-fixo" novalidate>
+            <label class="campo"><span>Valor por mês</span><input id="fx-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 4.500,00" maxlength="14"></label>
+            <label class="campo"><span>A partir de</span><input id="fx-mes" type="month" value="${chave}" required></label>
+            <button class="btn" type="submit">Salvar fixo</button>
+          </form>
+          <div class="msg" id="fx-msg" role="status"></div>
+          ${fixos.length ? `<h4>Histórico do fixo</h4>${fixos.map(f => `<div class="linha"><div class="esq"><div>Desde ${nomeMesChave(f.mes)}</div></div><div class="dir"><span class="valor num">${brl(f.valor)}</span> ${btnRemover(f.id)}</div></div>`).join('')}` : ''}
+        </section>
+        <section class="secao">
+          <h3>Variável de ${mesTxt}</h3>
+          <p class="apoio-secao">Lance o que entrou por projeto, comissão ou bônus. Média dos últimos 3 meses: ${v(media3)}.</p>
+          <form class="form-linha" id="f-var" novalidate>
+            <label class="campo"><span>De onde veio</span><input id="vr-desc" type="text" autocomplete="off" placeholder="Ex.: Projeto NSF" maxlength="80"></label>
+            <label class="campo"><span>Valor</span><input id="vr-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 1.200,00" maxlength="14"></label>
+            <button class="btn" type="submit">Adicionar</button>
+          </form>
+          <div class="msg" id="vr-msg" role="status"></div>
+          ${R.variaveis.length ? R.variaveis.map(r => `<div class="linha"><div class="esq"><div>${esc(r.descricao)}</div></div><div class="dir"><span class="valor num">${brl(r.valor)}</span> ${btnRemover(r.id)}</div></div>`).join('')
+            : `<p class="vazio">Nenhum variável lançado em ${mesTxt}.</p>`}
+        </section>
+      </div>`;
+
+    const enviarForm = async (form, msgSel, montar, okTxt) => {
+      const msg = $(msgSel), btn = form.querySelector('button[type="submit"]');
+      const dados = montar(); if (!dados) return;
+      btn.disabled = true; const rot = btn.textContent; btn.textContent = 'Salvando…';
+      try {
+        if (await gravar(dados.acao, dados.corpo)) { renderConteudo(); const m2 = $(msgSel); if (m2) { m2.className = 'msg info'; m2.textContent = okTxt; } }
+      } catch (e) { msg.className = 'msg erro'; msg.textContent = e.message; btn.disabled = false; btn.textContent = rot; }
+    };
+
+    $('#f-fixo').onsubmit = ev => {
+      ev.preventDefault();
+      enviarForm(ev.target, '#fx-msg', () => {
+        const valor = lerValor($('#fx-valor').value), mes = $('#fx-mes').value;
+        const msg = $('#fx-msg'); msg.className = 'msg erro';
+        if (!(valor > 0)) { msg.textContent = 'Digite o valor do fixo. Ex.: 4.500,00'; $('#fx-valor').focus(); return null; }
+        if (!/^\d{4}-\d{2}$/.test(mes)) { msg.textContent = 'Escolha o mês em que esse valor começa.'; return null; }
+        return { acao: 'salvarFixo', corpo: { valor, mes } };
+      }, 'Fixo salvo.');
+    };
+    $('#f-var').onsubmit = ev => {
+      ev.preventDefault();
+      enviarForm(ev.target, '#vr-msg', () => {
+        const valor = lerValor($('#vr-valor').value), descricao = $('#vr-desc').value.trim();
+        const msg = $('#vr-msg'); msg.className = 'msg erro';
+        if (descricao.length < 2) { msg.textContent = 'Diga de onde veio o valor. Ex.: Projeto NSF'; $('#vr-desc').focus(); return null; }
+        if (!(valor > 0)) { msg.textContent = 'Digite o valor. Ex.: 1.200,00'; $('#vr-valor').focus(); return null; }
+        return { acao: 'adicionarVariavel', corpo: { valor, descricao, mes: chave } };
+      }, 'Variável adicionado.');
+    };
+    // remover em dois toques, sem diálogo
+    $$('[data-remover]').forEach(b => b.onclick = async () => {
+      if (b.dataset.confirmar !== '1') { b.dataset.confirmar = '1'; b.textContent = 'Confirmar remoção'; setTimeout(() => { if (b.isConnected) { b.dataset.confirmar = ''; b.textContent = 'Remover'; } }, 4000); return; }
+      b.disabled = true; b.textContent = 'Removendo…';
+      try { if (await gravar('removerReceita', { id: b.dataset.remover })) renderConteudo(); }
+      catch (e) { b.disabled = false; b.textContent = e.message; }
+    });
   }
 
   function graficoRitmo(lanc, diasMes, dia, teto, largura) {

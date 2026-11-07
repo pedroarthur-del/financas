@@ -464,7 +464,14 @@
     const variaveis = R.filter(r => r.tipo === 'variavel' && r.mes === chave);
     const fixo = fixoReg ? fixoReg.valor : 0;
     const variavel = variaveis.reduce((s, r) => s + r.valor, 0);
-    return { fixo, fixoReg, variaveis, variavel, total: fixo + variavel };
+    // recorrentes ainda não recebidos neste mês (só para o mês atual e os seguintes)
+    const pendentes = chave >= chaveMes(hoje) ? recorrentesNoMes(chave).filter(x => !variaveis.some(r => r.recorrente === x.id)) : [];
+    const previsto = pendentes.reduce((s, x) => s + x.valor, 0);
+    return { fixo, fixoReg, variaveis, variavel, pendentes, previsto, total: fixo + variavel + previsto };
+  }
+  const recorrentes = () => E.dados?.ajustes?.recorrentes || [];
+  function recorrentesNoMes(chave) {
+    return recorrentes().filter(x => (!x.inicio || chave >= x.inicio) && (!x.fim || chave <= x.fim));
   }
 
   /** Média de gasto da categoria nos meses anteriores que têm lançamentos (até 3). */
@@ -600,11 +607,13 @@
     // um só ouvinte para editar: linhas de lançamento no painel e no fluxo
     $('#conteudo').addEventListener('click', ev => {
       const alvo = ev.target.closest('[data-editar]');
-      if (alvo) { ev.preventDefault(); abrirFolha(alvo.dataset.editar); }
+      if (alvo) { ev.preventDefault(); abrirFolha(alvo.dataset.editar); return; }
+      const ent = ev.target.closest('[data-editar-entrada]');
+      if (ent) { ev.preventDefault(); abrirFolha(ent.dataset.editarEntrada, 'entrada'); }
     });
     $('#conteudo').addEventListener('keydown', ev => {
-      const alvo = ev.target.closest('[data-editar]');
-      if (alvo && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); abrirFolha(alvo.dataset.editar); }
+      const alvo = ev.target.closest('[data-editar], [data-editar-entrada]');
+      if (alvo && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); alvo.click(); }
     });
     posicionarIndicador($('.abas-painel'));
     if (E.dados) renderConteudo();
@@ -740,7 +749,7 @@
           ${gastoRef > R.total ? `<b class="m-marco" data-inicio="${w(R.total, escala)}" title="Renda do mês"></b>` : ''}
         </div>
         <dl class="numeros">
-          <div><dt>Renda</dt><dd>${vc(R.total, 'bal-renda')}</dd><small>Fixo <span class="valor">${brl(R.fixo)}</span>${R.variavel ? `, variável <span class="valor">${brl(R.variavel)}</span>` : ''}</small></div>
+          <div><dt>Renda</dt><dd>${vc(R.total, 'bal-renda')}</dd><small>Fixo <span class="valor">${brl(R.fixo)}</span>${R.variavel ? `, entradas <span class="valor">${brl(R.variavel)}</span>` : ''}${R.previsto ? `, a receber <span class="valor">${brl(R.previsto)}</span>` : ''}</small></div>
           <div><dt>Gasto ${atual ? 'até agora' : 'no mês'}</dt><dd>${vc(total, 'bal-gasto')}</dd><small>${pct(total / R.total)} da renda</small></div>
           ${atual ? `<div><dt>Gasto previsto</dt><dd>${vc(proj, 'bal-prev')}</dd><small>${pct(proj / R.total)} da renda</small></div>` : ''}
           <div><dt>${atual ? 'Sobra prevista' : 'Sobrou'}</dt><dd class="${sobra < 0 ? 'excesso' : 'folga'}">${vc(sobra, 'bal-sobra')}</dd><small>${sobra < 0 ? 'faltou dinheiro' : pct(sobra / R.total) + ' da renda'}</small></div>
@@ -851,7 +860,9 @@
     const fixoProx = renda(chaveMes(prox)).fixo;
     const gastos3 = base3.map(k => k === chaveMes(hoje) ? proj : somaMes(k)).filter(g => g > 0);
     const gastoMedio = gastos3.length ? gastos3.reduce((s, g) => s + g, 0) / gastos3.length : 0;
-    const previsao = (fixoProx || varMedia || gastoMedio) ? `<p class="previsao">Previsão para ${MESES[prox.getMonth()]}: renda de ${v(fixoProx + varMedia)}${varMedia ? ` (fixo mais a média do variável dos últimos 3 meses)` : ''} e gasto de ${v(gastoMedio)}, sobrando ${v(fixoProx + varMedia - gastoMedio)}.</p>` : '';
+    const rendaProx = recorrentes().length ? renda(chaveMes(prox)).total : fixoProx + varMedia;
+    const comoRenda = recorrentes().length ? ' (fixo mais as entradas recorrentes previstas)' : varMedia ? ' (fixo mais a média do variável dos últimos 3 meses)' : '';
+    const previsao = (rendaProx || gastoMedio) ? `<p class="previsao">Previsão para ${MESES[prox.getMonth()]}: renda de ${v(rendaProx)}${comoRenda} e gasto de ${v(gastoMedio)}, sobrando ${v(rendaProx - gastoMedio)}.</p>` : '';
 
     $('#conteudo').innerHTML = `
       <div class="abertura">
@@ -947,8 +958,11 @@
     meses.forEach(d => {
       const ch = chaveMes(d), r = renda(ch);
       if (r.fixoReg) { const k = ymd(diaNoMes(d.getFullYear(), d.getMonth(), r.fixoReg.dia || 15)); if (dentro(k)) slot(k).ent.push({ desc: r.fixoReg.descricao || 'Salário fixo', valor: r.fixo, prev: k > kHoje }); }
-      r.variaveis.forEach(x => { const k = ymd(diaNoMes(d.getFullYear(), d.getMonth(), x.dia || 30)); if (dentro(k)) slot(k).ent.push({ desc: x.descricao, valor: x.valor, prev: k > kHoje }); });
-      if (!r.variaveis.length && ch >= chaveMes(hoje)) {
+      r.variaveis.forEach(x => { const k = ymd(diaNoMes(d.getFullYear(), d.getMonth(), x.dia || 30)); if (dentro(k)) slot(k).ent.push({ desc: x.descricao, valor: x.valor, prev: k > kHoje, entrada: x.id }); });
+      if (recorrentes().length) {
+        // previsão pelas entradas recorrentes cadastradas que ainda não chegaram neste mês
+        r.pendentes.forEach(x => { const k = ymd(diaNoMes(d.getFullYear(), d.getMonth(), x.dia || 30)); if (dentro(k) && k > kHoje) slot(k).ent.push({ desc: `${x.nome} (previsto)`, valor: x.valor, prev: true }); });
+      } else if (!r.variaveis.length && ch >= chaveMes(hoje)) {
         const media = [d, ...mesesAntes(d, 3)].slice(1).map(chaveMes).reduce((s, x) => s + renda(x).variavel, 0) / 3;
         const k = ymd(diaNoMes(d.getFullYear(), d.getMonth(), diaVar));
         if (media > 0 && dentro(k) && k > kHoje) slot(k).ent.push({ desc: 'Variável (média dos últimos 3 meses)', valor: media, prev: true });
@@ -1037,28 +1051,110 @@
 
   function fecharFolha() {
     const d = $('#folha'); if (!d || !d.open) return;
+    delete d.dataset.aberta;
     if (!movOk()) { d.close(); return; }
     d.classList.remove('aberta');
     d.addEventListener('transitionend', () => d.close(), { once: true });
     setTimeout(() => { if (d.open) d.close(); }, 400);
   }
 
-  function abrirFolha(id) {
+  const alternarFolha = modo => `<div class="abas abas-folha" data-grupo="folha" role="tablist" aria-label="Tipo de lançamento">
+      <button type="button" role="tab" data-modo-folha="saida" aria-selected="${modo === 'saida'}">Saída</button>
+      <button type="button" role="tab" data-modo-folha="entrada" aria-selected="${modo === 'entrada'}">Entrada</button>
+    </div>`;
+  function mostrarFolha(d) {
+    if (!d.open) { d.showModal(); requestAnimationFrame(() => d.classList.add('aberta')); }
+    posicionarIndicador($('[data-grupo="folha"]', d));
+    $$('[data-modo-folha]', d).forEach(b => b.onclick = () => { if (b.getAttribute('aria-selected') !== 'true') abrirFolha(null, b.dataset.modoFolha, $('#g-valor').value); });
+    setTimeout(() => $('#g-valor').focus(), movOk() && !d.dataset.aberta ? 260 : 0);
+    d.dataset.aberta = '1';
+    $('#g-fechar').onclick = fecharFolha;
+    d.oncancel = ev => { ev.preventDefault(); fecharFolha(); };
+    d.onclick = ev => { if (ev.target === d) fecharFolha(); };
+    $('#g-valor').addEventListener('input', ev => { ev.target.value = ev.target.value.replace(/[^\d.,]/g, ''); });
+    $$('.chip', d).forEach(b => b.onclick = () => {
+      $$(`.chip[data-grupo="${b.dataset.grupo}"]`, d).forEach(x => x.setAttribute('aria-checked', String(x === b)));
+      if (b.dataset.grupo === 'forma') $('#g-cartoes').classList.toggle('escondido', b.dataset.v !== 'Crédito');
+      if (b.dataset.grupo === 'rec' && b.dataset.id && !$('#g-desc').value) $('#g-desc').placeholder = b.dataset.v;
+      const m = $('#g-msg'); if (m) m.textContent = '';
+    });
+  }
+  const topoFolha = titulo => `<div class="folha-topo">
+          <span class="alca" aria-hidden="true"></span>
+          <h2 id="folha-titulo">${titulo}</h2>
+          <button class="ico" type="button" id="g-fechar" aria-label="Fechar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+        </div>`;
+
+  /** Entrada: projeto, venda, reembolso... Entra na renda do mês e no fluxo no dia informado. */
+  function abrirFolhaEntrada(id, valorMantido) {
+    const d = $('#folha');
+    const atual = id ? (E.dados.receitas || []).find(r => r.id === id && r.tipo === 'variavel') : null;
+    if (id && !atual) return avisoRapido('Essa entrada não está mais na lista. Toque em Atualizar.');
+    const tipos = E.dados.tiposEntrada || ['Variável', 'Venda', 'Reembolso', 'Presente', 'Rendimento', 'Outros'];
+    const dataIni = atual ? `${atual.mes}-${pad(Math.min(atual.dia, new Date(+atual.mes.slice(0, 4), +atual.mes.slice(5, 7), 0).getDate()))}` : ymd(hoje);
+    const recs = recorrentesNoMes((atual?.mes) || chaveMes(hoje));
+    const chip = (nome, grupo, sel, idx) => `<button type="button" class="chip" role="radio" aria-checked="${sel}" data-grupo="${grupo}" data-v="${esc(nome)}"${idx !== undefined ? ` data-id="${esc(idx)}"` : ''}>${esc(nome)}</button>`;
+    const valorIni = atual ? atual.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : (valorMantido || '');
+    d.innerHTML = `
+      <form class="folha-corpo entrada" id="g-form" method="dialog" novalidate>
+        ${topoFolha(atual ? 'Editar entrada' : 'Nova entrada')}
+        ${atual ? '' : alternarFolha('entrada')}
+        <label class="valor-grande"><span class="rs">+ R$</span><input id="g-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" maxlength="12" value="${valorIni}" aria-label="Valor da entrada"></label>
+        <fieldset class="chips" role="radiogroup" aria-label="Tipo de entrada"><legend>O que é</legend>${tipos.map(t => chip(t, 'tipo', t === (atual?.categoria || 'Variável'))).join('')}</fieldset>
+        ${recs.length ? `<fieldset class="chips" role="radiogroup" aria-label="Referente a"><legend>É o recebimento de</legend>${chip('Nenhuma', 'rec', !atual?.recorrente, '')}${recs.map(r => chip(r.nome, 'rec', r.id === atual?.recorrente, r.id)).join('')}</fieldset>` : ''}
+        <div class="folha-linha">
+          <label class="campo"><span>De onde veio</span><input id="g-desc" type="text" autocomplete="off" maxlength="80" placeholder="Ex.: Projeto NSF, venda da bicicleta" value="${esc(atual?.descricao || '')}"></label>
+          <label class="campo"><span>Dia que entrou</span><input id="g-data" type="date" value="${dataIni}"></label>
+        </div>
+        <div class="msg" id="g-msg" role="alert"></div>
+        <button class="btn largo" id="g-salvar" type="submit">${atual ? 'Salvar alterações' : 'Salvar entrada'}</button>
+        ${atual ? '<button class="link perigo largo" type="button" id="g-apagar">Apagar entrada</button>' : ''}
+      </form>`;
+    mostrarFolha(d);
+
+    $('#g-form').onsubmit = async ev => {
+      ev.preventDefault();
+      const msg = $('#g-msg'), btn = $('#g-salvar');
+      const valor = lerValor($('#g-valor').value), data = $('#g-data').value;
+      const categoria = $('.chip[data-grupo="tipo"][aria-checked="true"]', d)?.dataset.v || 'Variável';
+      const recorrente = $('.chip[data-grupo="rec"][aria-checked="true"]', d)?.dataset.id || '';
+      const descricao = $('#g-desc').value.trim();
+      msg.className = 'msg erro';
+      if (!(valor > 0)) { msg.textContent = 'Digite quanto entrou.'; $('#g-valor').focus(); return; }
+      if (descricao.length < 2 && !recorrente) { msg.textContent = 'Diga de onde veio o dinheiro.'; $('#g-desc').focus(); return; }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) { msg.textContent = 'Escolha o dia em que entrou.'; return; }
+      btn.disabled = true; btn.textContent = 'Salvando…';
+      const corpo = { valor, data, categoria, recorrente, descricao };
+      try {
+        if (await gravar(atual ? 'editarReceita' : 'adicionarVariavel', atual ? Object.assign({ id: atual.id }, corpo) : corpo)) {
+          fecharFolha(); renderConteudo();
+          avisoRapido(atual ? 'Entrada atualizada.' : `Entrada salva: + ${brl(valor)}.`);
+        }
+      } catch (e) { msg.textContent = e.message; btn.disabled = false; btn.textContent = atual ? 'Salvar alterações' : 'Salvar entrada'; }
+    };
+    const apagar = $('#g-apagar');
+    if (apagar) apagar.onclick = async () => {
+      if (apagar.dataset.confirmar !== '1') { apagar.dataset.confirmar = '1'; apagar.textContent = 'Toque de novo para apagar'; return; }
+      apagar.disabled = true; apagar.textContent = 'Apagando…';
+      try { if (await gravar('removerReceita', { id: atual.id })) { fecharFolha(); renderConteudo(); avisoRapido('Entrada apagada.'); } }
+      catch (e) { $('#g-msg').textContent = e.message; apagar.disabled = false; apagar.textContent = 'Apagar entrada'; }
+    };
+  }
+
+  function abrirFolha(id, modo = 'saida', valorMantido) {
     const d = $('#folha'); if (!d || !E.dados) return;
+    if (modo === 'entrada') return abrirFolhaEntrada(id, valorMantido);
     const atual = id ? (E.dados.lancamentos || []).find(l => l.id === id) : null;
     if (id && !atual) return avisoRapido('Esse gasto não está mais na lista. Toque em Atualizar.');
     const cats = categoriasPorUso(), formas = E.dados.formas || ['Pix', 'Crédito', 'Débito', 'Dinheiro'];
     const cat = atual?.categoria || '', forma = atual?.forma || ls.get(K.forma) || 'Pix';
-    const valorIni = atual ? atual.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '';
+    const valorIni = atual ? atual.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : (valorMantido || '');
     const chip = (nome, grupo, sel) => `<button type="button" class="chip" role="radio" aria-checked="${sel}" data-grupo="${grupo}" data-v="${esc(nome)}">${esc(nome)}</button>`;
 
     d.innerHTML = `
       <form class="folha-corpo" id="g-form" method="dialog" novalidate>
-        <div class="folha-topo">
-          <span class="alca" aria-hidden="true"></span>
-          <h2 id="folha-titulo">${atual ? 'Editar gasto' : 'Novo gasto'}</h2>
-          <button class="ico" type="button" id="g-fechar" aria-label="Fechar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
-        </div>
+        ${topoFolha(atual ? 'Editar gasto' : 'Novo lançamento')}
+        ${atual ? '' : alternarFolha('saida')}
         <label class="valor-grande"><span class="rs">R$</span><input id="g-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" maxlength="12" value="${valorIni}" aria-label="Valor do gasto"></label>
         <fieldset class="chips" role="radiogroup" aria-label="Categoria"><legend>Categoria</legend>${cats.map(c => chip(c, 'cat', c === cat)).join('')}</fieldset>
         <fieldset class="chips" role="radiogroup" aria-label="Forma de pagamento"><legend>Pagou com</legend>${formas.map(f => chip(f, 'forma', f === forma)).join('')}</fieldset>
@@ -1078,20 +1174,7 @@
         ${atual ? '<button class="link perigo largo" type="button" id="g-apagar">Apagar gasto</button>' : ''}
       </form>`;
 
-    d.showModal();
-    requestAnimationFrame(() => d.classList.add('aberta'));
-    setTimeout(() => $('#g-valor').focus(), movOk() ? 260 : 0);
-
-    // chips: um toque escolhe; setas navegam como num grupo de rádio
-    $$('.chip', d).forEach(b => b.onclick = () => {
-      $$(`.chip[data-grupo="${b.dataset.grupo}"]`, d).forEach(x => x.setAttribute('aria-checked', String(x === b)));
-      if (b.dataset.grupo === 'forma') $('#g-cartoes').classList.toggle('escondido', b.dataset.v !== 'Crédito');
-      if (b.dataset.grupo === 'cat') $('#g-msg').textContent = '';
-    });
-    $('#g-fechar').onclick = fecharFolha;
-    d.oncancel = ev => { ev.preventDefault(); fecharFolha(); };
-    d.onclick = ev => { if (ev.target === d) fecharFolha(); }; // toque fora da folha
-    $('#g-valor').addEventListener('input', ev => { ev.target.value = ev.target.value.replace(/[^\d.,]/g, ''); });
+    mostrarFolha(d);
 
     $('#g-form').onsubmit = async ev => {
       ev.preventDefault();
@@ -1151,7 +1234,7 @@
     const htmlDias = F.dias.map(x => {
       const vazio = !x.itens.ent.length && !x.itens.sai.length;
       const itens = [...x.itens.ent.map(i => ({ ...i, e: true })), ...x.itens.sai]
-        .map(i => `<li class="${i.e ? 'ent' : 'sai'}${i.prev ? ' prev' : ''}${i.id ? ' editavel' : ''}"${i.id ? ` data-editar="${esc(i.id)}" role="button" tabindex="0"` : ''}><span>${esc(i.desc)}${i.prev ? ' <small>previsto</small>' : ''}</span><span class="valor num">${i.e ? '+' : '−'} ${brl(i.valor)}</span></li>`).join('');
+        .map(i => `<li class="${i.e ? 'ent' : 'sai'}${i.prev ? ' prev' : ''}${i.id || i.entrada ? ' editavel' : ''}"${i.id ? ` data-editar="${esc(i.id)}" role="button" tabindex="0"` : i.entrada ? ` data-editar-entrada="${esc(i.entrada)}" role="button" tabindex="0"` : ''}><span>${esc(i.desc)}${i.prev ? ' <small>previsto</small>' : ''}</span><span class="valor num">${i.e ? '+' : '−'} ${brl(i.valor)}</span></li>`).join('');
       const resumo = `<span class="fd-dia">${pad(x.d.getDate())} <small>${x.hoje ? 'hoje' : SEMANA[x.d.getDay()]}</small></span>
         <span class="fd-ent valor num">${x.ent ? '+ ' + brl(x.ent) : ''}</span>
         <span class="fd-sai valor num">${x.sai ? '− ' + brl(x.sai) : ''}</span>
@@ -1239,6 +1322,8 @@
     const contas = (D.contas || []).slice().sort((a, b) => (contaNoMes(b, chave) - contaNoMes(a, chave)) || a.dia - b.dia);
     const totalContas = contas.filter(c => contaNoMes(c, chave)).reduce((s, c) => s + c.valor, 0);
     const cartoesL = cartoes();
+    const recs = recorrentes();
+    const edR = E.editRec ? recs.find(x => x.id === E.editRec) : null;
     const ed = E.editConta ? contas.find(c => c.id === E.editConta) : null;
     const edC = E.editCartao ? cartoesL.find(c => c.id === E.editCartao) : null;
     const aj = D.ajustes || {};
@@ -1248,7 +1333,7 @@
       <section class="heroi" aria-label="Renda do mês">
         <p class="frase">Sua renda em ${mesTxt}</p>
         ${valorDeFace(R.total)}
-        <p class="depois">${R.total ? `Fixo <span class="valor">${brl(R.fixo)}</span>${R.variavel ? ` e variável <span class="valor">${brl(R.variavel)}</span>` : ', sem variável lançado'}. Contas fixas: <span class="valor">${brl(totalContas)}</span> em ${mesTxt}.` : 'Nenhuma renda cadastrada para este mês.'}</p>
+        <p class="depois">${R.total ? `Fixo <span class="valor">${brl(R.fixo)}</span>${R.variavel ? `, entradas <span class="valor">${brl(R.variavel)}</span>` : ''}${R.previsto ? `, a receber <span class="valor">${brl(R.previsto)}</span>` : ''}. Contas fixas: <span class="valor">${brl(totalContas)}</span> em ${mesTxt}.` : 'Nenhuma renda cadastrada para este mês.'}</p>
       </section>
       ${faixa()}
       <div class="grade-secoes">
@@ -1278,17 +1363,33 @@
           </section>
 
           <section class="secao">
-            <h3>Variável de ${mesTxt}</h3>
-            <p class="apoio-secao">Projetos, comissões e bônus. Média dos últimos 3 meses: ${v(media3)}. Nos meses sem variável lançado, o fluxo usa essa média.</p>
-            <form class="form-linha tres" id="f-var" novalidate>
-              <label class="campo"><span>De onde veio</span><input id="vr-desc" type="text" autocomplete="off" placeholder="Ex.: Projeto NSF" maxlength="80"></label>
-              <label class="campo"><span>Valor</span><input id="vr-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 1.200,00" maxlength="14"></label>
-              <label class="campo"><span>Dia que cai</span><input id="vr-dia" type="number" inputmode="numeric" min="1" max="31" value="30"></label>
-              <button class="btn" type="submit">Adicionar</button>
+            <h3>Entradas de ${mesTxt} <small>${brl(R.variavel)}</small></h3>
+            <p class="apoio-secao">Tudo que entrou além do fixo: projetos, vendas, reembolsos. Toque numa entrada para editar.</p>
+            <button class="btn" type="button" id="b-nova-entrada">Lançar entrada</button>
+            ${R.variaveis.length ? R.variaveis.slice().sort((x, y) => x.dia - y.dia).map(r => `<div class="linha editavel" data-editar-entrada="${esc(r.id)}" role="button" tabindex="0"><div class="esq"><div>${esc(r.descricao)}</div><small>Dia ${r.dia || 30}, ${esc(r.categoria || 'Variável')}${r.recorrente ? `, ${esc(recorrentes().find(x => x.id === r.recorrente)?.nome || 'recorrente')}` : ''}</small></div><div class="dir"><span class="valor num">+ ${brl(r.valor)}</span></div></div>`).join('')
+              : `<p class="vazio">Nenhuma entrada lançada em ${mesTxt}.</p>`}
+            ${R.pendentes.length ? `<h4>A receber em ${mesTxt}</h4>${R.pendentes.map(x => `<div class="linha"><div class="esq"><div>${esc(x.nome)}</div><small>Previsto para o dia ${x.dia}</small></div><div class="dir"><span class="valor num">${brl(x.valor)}</span></div></div>`).join('')}` : ''}
+          </section>
+
+          <section class="secao" id="sec-recorrentes">
+            <h3>Entradas recorrentes</h3>
+            <p class="apoio-secao">Variáveis que se repetem, cada um com o seu dia (ex.: um projeto no dia 25 e outro no dia 30). O fluxo usa o valor previsto até você lançar quanto entrou de verdade${recs.length ? '' : '. Sem recorrentes, o fluxo usa a média dos últimos 3 meses'}.</p>
+            <form class="form-conta" id="f-rec" novalidate>
+              <label class="campo c-nome"><span>Nome</span><input id="rc-nome" type="text" autocomplete="off" placeholder="Ex.: Variável projeto A" maxlength="40" value="${esc(edR?.nome || '')}"></label>
+              <label class="campo"><span>Valor previsto</span><input id="rc-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 1.200,00" maxlength="14" value="${edR ? edR.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : ''}"></label>
+              <label class="campo"><span>Dia que cai</span><input id="rc-dia" type="number" inputmode="numeric" min="1" max="31" placeholder="30" value="${edR?.dia || ''}"></label>
+              <label class="campo"><span>Começa em</span><input id="rc-inicio" type="month" value="${edR?.inicio || chaveMes(hoje)}"></label>
+              <label class="campo"><span>Termina em <small>(opcional)</small></span><input id="rc-fim" type="month" value="${edR?.fim || ''}"></label>
+              <button class="btn" type="submit">${edR ? 'Salvar alterações' : 'Adicionar recorrente'}</button>
+              ${edR ? '<button class="btn secundario" type="button" id="rc-cancelar">Cancelar edição</button>' : ''}
             </form>
-            <div class="msg" id="vr-msg" role="status"></div>
-            ${R.variaveis.length ? R.variaveis.map(r => `<div class="linha"><div class="esq"><div>${esc(r.descricao)}</div><small>Dia ${r.dia || 30}</small></div><div class="dir"><span class="valor num">${brl(r.valor)}</span> ${btnRemover(r.id, 'removerReceita')}</div></div>`).join('')
-              : `<p class="vazio">Nenhum variável lançado em ${mesTxt}.</p>`}
+            <div class="msg" id="rc-msg" role="status"></div>
+            ${recs.length ? recs.map(x => {
+              const recebido = R.variaveis.filter(r => r.recorrente === x.id).reduce((s2, r) => s2 + r.valor, 0);
+              const noMes = recorrentesNoMes(chave).some(y => y.id === x.id);
+              const status = !noMes ? 'fora do período neste mês' : recebido ? `recebido ${brl(recebido)} em ${mesTxt}` : `a receber em ${mesTxt}`;
+              return `<div class="linha${noMes ? '' : ' inativa'}"><div class="esq"><div>${esc(x.nome)}</div><small>Dia ${x.dia}, ${x.fim ? `${mesCurtoTxt(x.inicio)} a ${mesCurtoTxt(x.fim)}` : `desde ${mesCurtoTxt(x.inicio)}`}. ${status}.</small></div><div class="dir"><span class="valor num">${brl(x.valor)}</span> <button class="link" type="button" data-editar-rec="${esc(x.id)}">Editar</button> ${btnRemover(x.id, 'removerRecorrente')}</div></div>`;
+            }).join('') : '<p class="vazio">Nenhuma entrada recorrente cadastrada.</p>'}
           </section>
         </div>
 
@@ -1362,7 +1463,7 @@
       const dados = montar(msg); if (!dados) return;
       btn.disabled = true; const rot = btn.textContent; btn.textContent = 'Salvando…';
       try {
-        if (await gravar(dados.acao, dados.corpo)) { E.editConta = null; E.editCartao = null; renderConteudo(); const m2 = $(msgSel); if (m2) { m2.className = 'msg info'; m2.textContent = okTxt; } }
+        if (await gravar(dados.acao, dados.corpo)) { E.editConta = null; E.editCartao = null; E.editRec = null; renderConteudo(); const m2 = $(msgSel); if (m2) { m2.className = 'msg info'; m2.textContent = okTxt; } }
       } catch (e) { msg.className = 'msg erro'; msg.textContent = e.message; btn.disabled = false; btn.textContent = rot; }
     };
     const dia = id => { const n = Number($(id).value); return Number.isInteger(n) && n >= 1 && n <= 31 ? n : null; };
@@ -1383,13 +1484,21 @@
       return { acao: 'salvarFixo', corpo: { valor, mes, dia: d } };
     }, 'Fixo salvo.'); };
 
-    $('#f-var').onsubmit = ev => { ev.preventDefault(); enviarForm(ev.target, '#vr-msg', msg => {
-      const valor = lerValor($('#vr-valor').value), descricao = $('#vr-desc').value.trim(), d = dia('#vr-dia');
-      if (descricao.length < 2) return erro(msg, 'Diga de onde veio o valor. Ex.: Projeto NSF', '#vr-desc');
-      if (!(valor > 0)) return erro(msg, 'Digite o valor. Ex.: 1.200,00', '#vr-valor');
-      if (!d) return erro(msg, 'O dia precisa ser de 1 a 31.', '#vr-dia');
-      return { acao: 'adicionarVariavel', corpo: { valor, descricao, mes: chave, dia: d } };
-    }, 'Variável adicionado.'); };
+    $('#b-nova-entrada').onclick = () => abrirFolha(null, 'entrada');
+    $('#f-rec').onsubmit = ev => { ev.preventDefault(); enviarForm(ev.target, '#rc-msg', msg => {
+      const nome = $('#rc-nome').value.trim(), valor = lerValor($('#rc-valor').value), d2 = dia('#rc-dia');
+      const inicio = $('#rc-inicio').value, fim = $('#rc-fim').value;
+      if (nome.length < 2) return erro(msg, 'Dê um nome. Ex.: Variável projeto A', '#rc-nome');
+      if (!(valor > 0)) return erro(msg, 'Digite o valor previsto.', '#rc-valor');
+      if (!d2) return erro(msg, 'Diga o dia em que costuma cair (1 a 31).', '#rc-dia');
+      if (!/^\d{4}-\d{2}$/.test(inicio)) return erro(msg, 'Escolha o mês de início.', '#rc-inicio');
+      if (fim && fim < inicio) return erro(msg, 'O mês final precisa ser depois do início.', '#rc-fim');
+      const corpo = { nome, valor, dia: d2, inicio, fim };
+      if (E.editRec) corpo.id = E.editRec;
+      return { acao: 'salvarRecorrente', corpo };
+    }, edR ? 'Recorrente atualizada.' : 'Recorrente adicionada.'); };
+    const rcCanc = $('#rc-cancelar'); if (rcCanc) rcCanc.onclick = () => { E.editRec = null; renderConteudo(); };
+    $$('[data-editar-rec]').forEach(b => b.onclick = () => { E.editRec = b.dataset.editarRec; renderConteudo(); $('#sec-recorrentes').scrollIntoView({ behavior: movOk() ? 'smooth' : 'auto', block: 'start' }); $('#rc-nome').focus({ preventScroll: true }); });
 
     // período da conta: fim direto ou nº de meses
     const atualizarDica = () => { $('#ct-dica').textContent = dicaPeriodo($('#ct-inicio').value, $('#ct-fim').value); };

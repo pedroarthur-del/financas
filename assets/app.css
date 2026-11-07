@@ -578,3 +578,11 @@ details.fd[open] .fd-linha { padding-bottom: 4px; }
 .form-conta > *, .form-linha > * { min-width: 0; }
 .linha .esq { flex: 1 1 auto; }
 .linha .dir { flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; row-gap: 2px; }
+
+/* =====================================================================
+   v2.7 · entradas
+   ===================================================================== */
+.abas.abas-folha { margin: 12px 0 4px; }
+.folha-corpo.entrada .valor-grande input { color: var(--folga); caret-color: var(--folga); }
+.folha-corpo.entrada .valor-grande .rs { color: var(--folga); }
+#b-nova-entrada { margin-bottom: 10px; }

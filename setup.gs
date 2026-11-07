@@ -32,6 +32,7 @@ const CONFIG = {
     'Assinaturas', 'Outros'
   ],
   formasPagamento: ['Pix', 'Crédito', 'Débito', 'Dinheiro'],
+  tiposEntrada: ['Variável', 'Venda', 'Reembolso', 'Presente', 'Rendimento', 'Outros'],
   fuso: 'America/Fortaleza'
 };
 
@@ -46,7 +47,7 @@ const SEG = {
   aparelhoDias: 60       // "lembrar de mim": dias sem precisar da senha (renova a cada uso)
 };
 
-const VERSAO = '2.6.0';
+const VERSAO = '2.7.0';
 
 const ABA = { respostas: 'Respostas', lanc: 'Lançamentos', tetos: 'Tetos', resumo: 'Resumo', links: 'Links', receitas: 'Receitas', contas: 'Contas fixas' };
 
@@ -80,6 +81,9 @@ const ROTAS = {
   dados: c => { const s = Sessao.validar(c.token); return Dados.painel(s); },
   salvarFixo: c => { const s = Sessao.validar(c.token); Receitas.salvarFixo(c, s); return Dados.painel(s); },
   adicionarVariavel: c => { const s = Sessao.validar(c.token); Receitas.adicionarVariavel(c, s); return Dados.painel(s); },
+  editarReceita: c => { const s = Sessao.validar(c.token); Receitas.editarVariavel(c); return Dados.painel(s); },
+  salvarRecorrente: c => { const s = Sessao.validar(c.token); Ajustes.salvarRecorrente(c); return Dados.painel(s); },
+  removerRecorrente: c => { const s = Sessao.validar(c.token); Ajustes.removerRecorrente(c); return Dados.painel(s); },
   removerReceita: c => { const s = Sessao.validar(c.token); Receitas.remover(c); return Dados.painel(s); },
   salvarConta: c => { const s = Sessao.validar(c.token); Contas.salvar(c, s); return Dados.painel(s); },
   removerConta: c => { const s = Sessao.validar(c.token); Contas.remover(c); return Dados.painel(s); },
@@ -422,7 +426,7 @@ const Auth = {
    ===================================================================== */
 
 const Receitas = {
-  CAB: ['ID', 'Mês', 'Tipo', 'Descrição', 'Valor', 'Lançado por', 'Criado em', 'Dia'],
+  CAB: ['ID', 'Mês', 'Tipo', 'Descrição', 'Valor', 'Lançado por', 'Criado em', 'Dia', 'Tipo de entrada', 'Recorrente'],
   aba() {
     const ss = Dados.planilha();
     let a = ss.getSheetByName(ABA.receitas);
@@ -434,7 +438,10 @@ const Receitas = {
       a.getRange('E2:E').setNumberFormat('"R$" #,##0.00');
       a.setColumnWidths(1, 8, 130);
     }
-    if (a.getLastColumn() < this.CAB.length) a.getRange(1, 8).setValue('Dia').setFontWeight('bold').setBackground('#E8EAF6');
+    if (a.getRange(1, 10).getValue() !== 'Recorrente') {
+      a.getRange(1, 8, 1, 3).setValues([['Dia', 'Tipo de entrada', 'Recorrente']]).setFontWeight('bold').setBackground('#E8EAF6');
+      a.getRange('J:J').setNumberFormat('@');
+    }
     return a;
   },
   listar() {
@@ -448,16 +455,33 @@ const Receitas = {
         tipo: String(l[2]) === 'Fixo' ? 'fixo' : 'variavel',
         descricao: String(l[3] || ''),
         valor: Number(l[4]) || 0,
-        dia: Number(l[7]) || (String(l[2]) === 'Fixo' ? 15 : 30)
+        dia: Number(l[7]) || (String(l[2]) === 'Fixo' ? 15 : 30),
+        categoria: String(l[8] || (String(l[2]) === 'Fixo' ? 'Salário' : 'Variável')),
+        recorrente: String(l[9] || '')
       }));
   },
-  inserir(mes, tipo, descricao, valor, sessao, dia) {
+  inserir(mes, tipo, descricao, valor, sessao, dia, categoria, recorrente) {
     const a = this.aba();
     const id = aleatorio_().slice(0, 12);
     const linha = a.getLastRow() + 1;
     a.getRange(linha, 1, 1, 2).setNumberFormat('@');
-    a.getRange(linha, 1, 1, 8).setValues([[id, mes, tipo, descricao, valor, sessao.nome, new Date(), dia]]);
+    a.getRange(linha, 10).setNumberFormat('@');
+    a.getRange(linha, 1, 1, 10).setValues([[id, mes, tipo, descricao, valor, sessao.nome, new Date(), dia, categoria || '', recorrente || '']]);
     return id;
+  },
+  /** Mês e dia de uma entrada: pela data (yyyy-MM-dd) ou pelo par mês + dia. */
+  quando(c) {
+    if (c.data) { const d = V.data(c.data); return { mes: d.slice(0, 7), dia: Number(d.slice(8, 10)) }; }
+    return { mes: V.mes(c.mes), dia: V.dia(c.dia, 30) };
+  },
+  validarEntrada(c) {
+    const valor = V.valor(c.valor), q = this.quando(c);
+    const categoria = CONFIG.tiposEntrada.includes(String(c.categoria)) ? String(c.categoria) : 'Variável';
+    const recorrente = c.recorrente ? String(c.recorrente) : '';
+    if (recorrente && !Ajustes.ler().recorrentes.some(r => r.id === recorrente)) throw new ApiErro('recorrente_invalido', 'Essa entrada recorrente não existe mais.');
+    const descricao = V.texto(c.descricao, 80) || (recorrente ? Ajustes.ler().recorrentes.find(r => r.id === recorrente).nome : '');
+    if (descricao.length < 2) throw new ApiErro('descricao_invalida', 'Diga de onde veio o dinheiro (ex.: Projeto NSF, venda da bicicleta).');
+    return { valor, mes: q.mes, dia: q.dia, categoria, recorrente, descricao };
   },
   salvarFixo(c, sessao) {
     const mes = V.mes(c.mes), valor = V.valor(c.valor), dia = V.dia(c.dia, 15);
@@ -469,10 +493,23 @@ const Receitas = {
     });
   },
   adicionarVariavel(c, sessao) {
-    const mes = V.mes(c.mes), valor = V.valor(c.valor), dia = V.dia(c.dia, 30);
-    const descricao = V.texto(c.descricao, 80);
-    if (descricao.length < 2) throw new ApiErro('descricao_invalida', 'Diga de onde veio o valor (ex.: nome do projeto).');
-    comTrava_(() => this.inserir(mes, 'Variável', descricao, valor, sessao, dia));
+    const e = this.validarEntrada(c);
+    comTrava_(() => this.inserir(e.mes, 'Variável', e.descricao, e.valor, sessao, e.dia, e.categoria, e.recorrente));
+  },
+  editarVariavel(c) {
+    const e = this.validarEntrada(c), id = String(c.id || '');
+    if (!/^[a-f0-9]{12}$/.test(id)) throw new ApiErro('id_invalido', 'Entrada não encontrada.');
+    comTrava_(() => {
+      const a = this.aba(), vals = a.getDataRange().getValues();
+      for (let i = vals.length - 1; i >= 1; i--) if (String(vals[i][0]) === id) {
+        if (String(vals[i][2]) === 'Fixo') throw new ApiErro('somente_variavel', 'O salário fixo se edita em Cadastros.');
+        a.getRange(i + 1, 2).setNumberFormat('@').setValue(e.mes);
+        a.getRange(i + 1, 4, 1, 2).setValues([[e.descricao, e.valor]]);
+        a.getRange(i + 1, 8, 1, 3).setValues([[e.dia, e.categoria, e.recorrente]]);
+        return;
+      }
+      throw new ApiErro('nao_encontrado', 'Essa entrada não existe mais.');
+    });
   },
   remover(c) {
     const id = String(c.id || '');
@@ -684,6 +721,7 @@ const Ajustes = {
       a.cartoes = a.cartao ? [{ id: '000000000001', nome: 'Cartão principal', fecha: a.cartao.fecha, vence: a.cartao.vence }] : [];
     }
     delete a.cartao;
+    if (!Array.isArray(a.recorrentes)) a.recorrentes = [];
     return a;
   },
   /** Crédito precisa de um cartão cadastrado (se houver cartões); outras formas não levam cartão. */
@@ -710,6 +748,32 @@ const Ajustes = {
         if (a.cartoes.length >= 12) throw new ApiErro('limite', 'Limite de 12 cartões.');
         a.cartoes.push({ id: aleatorio_().slice(0, 12), nome, fecha, vence });
       }
+      Store.set('AJUSTES', a);
+    });
+  },
+  salvarRecorrente(c) {
+    const nome = V.texto(c.nome, 40);
+    if (nome.length < 2) throw new ApiErro('nome_invalido', 'Dê um nome. Ex.: Variável projeto A');
+    const valor = V.valor(c.valor), dia = V.dia(c.dia, 30), inicio = V.mes(c.inicio), fim = c.fim ? V.mes(c.fim) : '';
+    if (fim && fim < inicio) throw new ApiErro('periodo_invalido', 'O mês final precisa ser depois do início.');
+    comTrava_(() => {
+      const a = this.ler();
+      if (c.id) {
+        const x = a.recorrentes.find(k => k.id === String(c.id));
+        if (!x) throw new ApiErro('nao_encontrado', 'Essa entrada recorrente não existe mais.');
+        Object.assign(x, { nome, valor, dia, inicio, fim });
+      } else {
+        if (a.recorrentes.length >= 20) throw new ApiErro('limite', 'Limite de 20 entradas recorrentes.');
+        a.recorrentes.push({ id: aleatorio_().slice(0, 12), nome, valor, dia, inicio, fim });
+      }
+      Store.set('AJUSTES', a);
+    });
+  },
+  removerRecorrente(c) {
+    comTrava_(() => {
+      const a = this.ler(), antes = a.recorrentes.length;
+      a.recorrentes = a.recorrentes.filter(k => k.id !== String(c.id || ''));
+      if (a.recorrentes.length === antes) throw new ApiErro('nao_encontrado', 'Já foi removida.');
       Store.set('AJUSTES', a);
     });
   },
@@ -766,7 +830,7 @@ const Dados = {
     const tetos = ss.getSheetByName(ABA.tetos).getDataRange().getValues().slice(1)
       .filter(l => l[0] && CONFIG.categorias.includes(String(l[0])))
       .map(l => ({ categoria: String(l[0]), teto: Number(l[1]) || 0 }));
-    return { atualizado: new Date().toISOString(), usuario: { nome: sessao.nome }, lancamentos, tetos, receitas: Receitas.listar(), contas: Contas.listar(), ajustes: Ajustes.ler(), categorias: CONFIG.categorias, formas: CONFIG.formasPagamento, formulario: this.linkFormulario() };
+    return { atualizado: new Date().toISOString(), usuario: { nome: sessao.nome }, lancamentos, tetos, receitas: Receitas.listar(), contas: Contas.listar(), ajustes: Ajustes.ler(), categorias: CONFIG.categorias, formas: CONFIG.formasPagamento, tiposEntrada: CONFIG.tiposEntrada, formulario: this.linkFormulario() };
   },
   linkFormulario() {
     const p = Store.p();

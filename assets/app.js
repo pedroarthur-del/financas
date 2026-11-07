@@ -7,7 +7,7 @@
 
   const CFG = Object.assign({ api: '', nome: 'Minhas finanças', sessaoMin: 30 }, window.FINANCAS || {});
   const PBKDF2_ITER = 600000; // OWASP 2023 para PBKDF2-HMAC-SHA256
-  const K = { sessao: 'fin.sessao', cache: 'fin.cache', email: 'fin.email', privado: 'fin.privado', aparelho: 'fin.aparelho', forma: 'fin.forma' };
+  const K = { sessao: 'fin.sessao', cache: 'fin.cache', email: 'fin.email', privado: 'fin.privado', aparelho: 'fin.aparelho', forma: 'fin.forma', cartao: 'fin.cartao' };
 
   /* ------------------------------ util ------------------------------ */
   const $ = (s, r = document) => r.querySelector(s);
@@ -464,7 +464,7 @@
   /** Previsão de fim de mês por categoria: o que já saiu + contas fixas a vencer + ritmo do dia a dia. */
   function prever(cat, gasto, teto, ctx) {
     if (!ctx.atual) return gasto;
-    const contasCat = (E.dados.contas || []).filter(c => c.ativa && c.categoria === cat);
+    const contasCat = (E.dados.contas || []).filter(c => c.categoria === cat && contaNoMes(c, chaveMes(E.ref)));
     const futuras = contasCat.filter(c => Math.min(c.dia, ctx.diasMes) > ctx.dia && !(c.criada && c.criada > `${chaveMes(E.ref)}-${pad(Math.min(c.dia, ctx.diasMes))}`)).reduce((s, c) => s + c.valor, 0);
     if (FIXAS.includes(cat)) {
       if (contasCat.length) return gasto + futuras;
@@ -790,7 +790,7 @@
 
     // ---------- formas e últimos ----------
     const porForma = {};
-    lanc.forEach(l => { const f = l.forma || 'Sem forma'; porForma[f] = (porForma[f] || 0) + l.valor; });
+    lanc.forEach(l => { const f = (l.forma === 'Crédito' && cartoes().length ? `Crédito ${cartaoDe(l.cartao)?.nome || ''}`.trim() : l.forma) || 'Sem forma'; porForma[f] = (porForma[f] || 0) + l.valor; });
     const htmlFormas = Object.keys(porForma).length ? Object.entries(porForma).sort((a, b) => b[1] - a[1]).map(([f, val]) =>
       `<div class="linha"><div class="esq">${esc(f)}</div><div class="dir"><span class="valor num">${brl(val)}</span><small>${pct(val / total)}</small></div></div>`
     ).join('') : '<p class="vazio">Sem lançamentos.</p>';
@@ -869,9 +869,17 @@
   const diaNoMes = (a, m0, dia) => new Date(a, m0, Math.min(dia, new Date(a, m0 + 1, 0).getDate()));
   const SEMANA = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
 
-  /** Data em que uma compra no crédito sai da conta (vencimento da fatura). */
-  function pagamentoCredito(k) {
-    const c = E.dados?.ajustes?.cartao; if (!c) return k;
+  const cartoes = () => E.dados?.ajustes?.cartoes || [];
+  /** Cartão de um lançamento: o escolhido; sem escolha (formulário, versões antigas), o primeiro cadastrado. */
+  const cartaoDe = id => cartoes().find(c => c.id === id) || cartoes()[0] || null;
+  /** Conta fixa vale no mês 'yyyy-MM'? (entre o início e o fim, quando houver) */
+  const contaNoMes = (c, mes) => c.ativa && (!c.inicio || mes >= c.inicio) && (!c.fim || mes <= c.fim);
+  const mesCurtoTxt = k => { if (!k) return ''; const [a, mm] = k.split('-').map(Number); return MESES[mm - 1].slice(0, 3) + '/' + String(a).slice(2); };
+  const mesesEntre = (a, b) => { const [y1, m1] = a.split('-').map(Number), [y2, m2] = b.split('-').map(Number); return (y2 - y1) * 12 + (m2 - m1); };
+
+  /** Data em que uma compra no crédito sai da conta (vencimento da fatura do cartão). */
+  function pagamentoCredito(k, idCartao) {
+    const c = cartaoDe(idCartao); if (!c) return k;
     const p = deYmd(k);
     let fech = diaNoMes(p.getFullYear(), p.getMonth(), c.fecha);
     if (p > fech) fech = diaNoMes(p.getFullYear(), p.getMonth() + 1, c.fecha);
@@ -880,7 +888,7 @@
       : diaNoMes(fech.getFullYear(), fech.getMonth() + 1, c.vence);
     return ymd(venc);
   }
-  const usaCartao = forma => forma === 'Crédito' && !!E.dados?.ajustes?.cartao;
+  const usaCartao = forma => forma === 'Crédito' && cartoes().length > 0;
 
   /** Gasto variável diário estimado (sem contas fixas), misturando o mês atual com o histórico. */
   function ritmoVariavel() {
@@ -900,8 +908,12 @@
     const M = new Map();
     const slot = k => { if (!M.has(k)) M.set(k, { ent: [], sai: [] }); return M.get(k); };
     const dentro = k => k >= kIni && k <= kFim;
-    const faturas = new Map(); // vencimento -> { valor, qtd, prev }
-    const addFatura = (k, valor, prev) => { const f = faturas.get(k) || { valor: 0, qtd: 0, prev: 0 }; f.valor += valor; f.qtd++; if (prev) f.prev += valor; faturas.set(k, f); };
+    const faturas = new Map(); // "vencimento|cartão" -> { k, nome, valor, qtd, prev }
+    const addFatura = (k, valor, prev, idCartao) => {
+      const c = cartaoDe(idCartao), ch = k + '|' + (c ? c.id : '');
+      const f = faturas.get(ch) || { k, nome: c ? c.nome : 'cartão', valor: 0, qtd: 0, prev: 0 };
+      f.valor += valor; f.qtd++; if (prev) f.prev += valor; faturas.set(ch, f);
+    };
 
     const meses = [];
     for (let d = new Date(ini.getFullYear(), ini.getMonth(), 1); d <= fim; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) meses.push(d);
@@ -925,7 +937,7 @@
     // 2. saídas lançadas (crédito entra no vencimento da fatura)
     (E.dados.lancamentos || []).forEach(l => {
       if (String(l.data) < desde) return;
-      if (usaCartao(l.forma)) { addFatura(pagamentoCredito(l.data), l.valor, false); return; }
+      if (usaCartao(l.forma)) { addFatura(pagamentoCredito(l.data, l.cartao), l.valor, false, l.cartao); return; }
       // lançado depois de informar o saldo no mesmo dia: ainda não está no saldo informado
       const anc = E.dados.ajustes?.saldo;
       const depois = !!(anc && anc.em && l.criado && l.data === anc.data && l.criado > anc.em);
@@ -937,8 +949,8 @@
     const mesesContas = [new Date(ini.getFullYear(), ini.getMonth() - 1, 1), ...meses];
     mesesContas.forEach(d => contas.forEach(c => {
       const k = ymd(diaNoMes(d.getFullYear(), d.getMonth(), c.dia));
-      if (k <= kHoje || (c.criada && c.criada > k)) return;
-      if (usaCartao(c.forma)) addFatura(pagamentoCredito(k), c.valor, true);
+      if (k <= kHoje || (c.criada && c.criada > k) || !contaNoMes(c, k.slice(0, 7))) return;
+      if (usaCartao(c.forma)) addFatura(pagamentoCredito(k, c.cartao), c.valor, true, c.cartao);
       else if (dentro(k)) slot(k).sai.push({ desc: c.nome, valor: c.valor, prev: true, fixa: true });
     }));
 
@@ -948,7 +960,7 @@
       slot(ymd(d)).sai.push({ desc: 'Gastos do dia a dia (estimativa)', valor: taxa, prev: true, estimativa: true });
     }
 
-    faturas.forEach((f, k) => { if (dentro(k)) slot(k).sai.push({ desc: `Fatura do cartão (${f.qtd} ${f.qtd === 1 ? 'item' : 'itens'}${f.prev ? ', inclui contas a lançar' : ''})`, valor: f.valor, prev: k > kHoje, fatura: true }); });
+    faturas.forEach(f => { if (dentro(f.k)) slot(f.k).sai.push({ desc: `Fatura ${f.nome} (${f.qtd} ${f.qtd === 1 ? 'item' : 'itens'}${f.prev ? ', inclui contas a lançar' : ''})`, valor: f.valor, prev: f.k > kHoje, fatura: true }); });
     return M;
   }
 
@@ -1029,6 +1041,11 @@
         <label class="valor-grande"><span class="rs">R$</span><input id="g-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" maxlength="12" value="${valorIni}" aria-label="Valor do gasto"></label>
         <fieldset class="chips" role="radiogroup" aria-label="Categoria"><legend>Categoria</legend>${cats.map(c => chip(c, 'cat', c === cat)).join('')}</fieldset>
         <fieldset class="chips" role="radiogroup" aria-label="Forma de pagamento"><legend>Pagou com</legend>${formas.map(f => chip(f, 'forma', f === forma)).join('')}</fieldset>
+        <fieldset class="chips chips-cartao${forma === 'Crédito' ? '' : ' escondido'}" id="g-cartoes" role="radiogroup" aria-label="Cartão">
+          <legend>Qual cartão</legend>
+          ${cartoes().length ? cartoes().map(c => chip(c.nome, 'cartao', c.id === (atual?.cartao || ls.get(K.cartao) || cartoes()[0].id)).replace('data-v=', `data-id="${esc(c.id)}" data-v=`)).join('')
+            : '<p class="apoio-secao">Cadastre seus cartões em Cadastros para separar as faturas.</p>'}
+        </fieldset>
         <div class="folha-linha">
           <label class="campo"><span>Descrição (opcional)</span><input id="g-desc" type="text" autocomplete="off" maxlength="200" placeholder="Ex.: Almoço com o time" value="${esc(atual?.descricao || '')}"></label>
           <label class="campo"><span>Data</span><input id="g-data" type="date" value="${atual?.data || ymd(hoje)}" max="${ymd(new Date(hoje.getFullYear() + 1, 11, 31))}"></label>
@@ -1046,6 +1063,7 @@
     // chips: um toque escolhe; setas navegam como num grupo de rádio
     $$('.chip', d).forEach(b => b.onclick = () => {
       $$(`.chip[data-grupo="${b.dataset.grupo}"]`, d).forEach(x => x.setAttribute('aria-checked', String(x === b)));
+      if (b.dataset.grupo === 'forma') $('#g-cartoes').classList.toggle('escondido', b.dataset.v !== 'Crédito');
       if (b.dataset.grupo === 'cat') $('#g-msg').textContent = '';
     });
     $('#g-fechar').onclick = fecharFolha;
@@ -1066,10 +1084,13 @@
       if (!fp) { msg.textContent = 'Escolha como pagou.'; return; }
       if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) { msg.textContent = 'Escolha a data.'; return; }
       btn.disabled = true; btn.textContent = 'Salvando…';
-      const corpo = { valor, categoria, forma: fp, data, descricao: $('#g-desc').value.trim() };
+      const idCartao = fp === 'Crédito' ? $('.chip[data-grupo="cartao"][aria-checked="true"]', d)?.dataset.id || '' : '';
+      if (fp === 'Crédito' && cartoes().length && !idCartao) { msg.textContent = 'Escolha em qual cartão foi a compra.'; return; }
+      const corpo = { valor, categoria, forma: fp, data, descricao: $('#g-desc').value.trim(), cartao: idCartao };
       try {
         if (await gravar(atual ? 'editarLancamento' : 'lancar', atual ? Object.assign({ id: atual.id }, corpo) : corpo)) {
           ls.set(K.forma, fp);
+          if (idCartao) ls.set(K.cartao, idCartao);
           fecharFolha();
           renderConteudo();
           avisoRapido(atual ? 'Gasto atualizado.' : `Gasto salvo: ${brl(valor)} em ${categoria}.`);
@@ -1135,7 +1156,7 @@
         <h3>Dia a dia <small>toque no dia para ver o que entrou e saiu</small></h3>
         <div class="fd cab"><div class="fd-linha"><span class="fd-dia">Dia</span><span class="fd-ent">Entrou</span><span class="fd-sai">Saiu</span><span class="fd-saldo">Saldo</span></div></div>
         ${htmlDias}
-        <p class="previsao">${E.dados.ajustes?.cartao ? `Compras no crédito entram no dia ${E.dados.ajustes.cartao.vence}, quando a fatura vence.` : 'Compras no crédito entram no dia da compra. Cadastre o fechamento e o vencimento do cartão para elas caírem no dia da fatura.'} Os dias que ainda não chegaram usam uma estimativa do seu gasto do dia a dia.</p>
+        <p class="previsao">${cartoes().length ? `Compras no crédito entram no vencimento da fatura de cada cartão (${cartoes().map(c => `${esc(c.nome)} dia ${c.vence}`).join(', ')}).` : 'Compras no crédito entram no dia da compra. Cadastre seus cartões para elas caírem no dia da fatura.'} Os dias que ainda não chegaram usam uma estimativa do seu gasto do dia a dia.</p>
       </section>`;
 
     $$('[data-aba-ir]').forEach(b => b.onclick = () => irPara(b.dataset.abaIr));
@@ -1174,6 +1195,13 @@
 
   /* ------------------------ aba CADASTROS ------------------------ */
   const lerValor = s => { const t = String(s || '').replace(/[R$\s]/g, ''); const neg = /^-/.test(t); const n = Number(t.replace(/^-/, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')); return isFinite(n) ? (neg ? -n : n) : NaN; };
+  function dicaPeriodo(ini, fim) {
+    if (!/^\d{4}-\d{2}$/.test(ini || '')) return '';
+    if (!fim) return `Todo mês a partir de ${mesCurtoTxt(ini)}, sem data para acabar.`;
+    if (fim < ini) return 'O mês final está antes do início.';
+    const n = mesesEntre(ini, fim) + 1;
+    return `${n} ${n === 1 ? 'mês' : 'meses'}: de ${mesCurtoTxt(ini)} a ${mesCurtoTxt(fim)}.`;
+  }
   const opcoes = (lista, sel) => lista.map(o => `<option${o === sel ? ' selected' : ''}>${esc(o)}</option>`).join('');
 
   function renderCadastros() {
@@ -1185,8 +1213,11 @@
     const nomeMesChave = k => { const [a, mm] = k.split('-').map(Number); return MESES[mm - 1] + ' de ' + a; };
     const dataBR = k => k.split('-').reverse().join('/');
     const btnRemover = (id, acao) => `<button class="link perigo" type="button" data-remover="${esc(id)}" data-acao-remover="${acao}">Remover</button>`;
-    const contas = (D.contas || []).slice().sort((a, b) => a.dia - b.dia);
-    const totalContas = contas.filter(c => c.ativa).reduce((s, c) => s + c.valor, 0);
+    const contas = (D.contas || []).slice().sort((a, b) => (contaNoMes(b, chave) - contaNoMes(a, chave)) || a.dia - b.dia);
+    const totalContas = contas.filter(c => contaNoMes(c, chave)).reduce((s, c) => s + c.valor, 0);
+    const cartoesL = cartoes();
+    const ed = E.editConta ? contas.find(c => c.id === E.editConta) : null;
+    const edC = E.editCartao ? cartoesL.find(c => c.id === E.editCartao) : null;
     const aj = D.ajustes || {};
     const cats = D.categorias || [], formas = D.formas || ['Pix', 'Crédito', 'Débito', 'Dinheiro'];
 
@@ -1194,7 +1225,7 @@
       <section class="heroi" aria-label="Renda do mês">
         <p class="frase">Sua renda em ${mesTxt}</p>
         ${valorDeFace(R.total)}
-        <p class="depois">${R.total ? `Fixo <span class="valor">${brl(R.fixo)}</span>${R.variavel ? ` e variável <span class="valor">${brl(R.variavel)}</span>` : ', sem variável lançado'}. Contas fixas: <span class="valor">${brl(totalContas)}</span> por mês.` : 'Nenhuma renda cadastrada para este mês.'}</p>
+        <p class="depois">${R.total ? `Fixo <span class="valor">${brl(R.fixo)}</span>${R.variavel ? ` e variável <span class="valor">${brl(R.variavel)}</span>` : ', sem variável lançado'}. Contas fixas: <span class="valor">${brl(totalContas)}</span> em ${mesTxt}.` : 'Nenhuma renda cadastrada para este mês.'}</p>
       </section>
       ${faixa()}
       <div class="grade-secoes">
@@ -1239,32 +1270,47 @@
         </div>
 
         <div>
-          <section class="secao">
-            <h3>Contas fixas <small>${brl(totalContas)} por mês</small></h3>
-            <p class="apoio-secao">Elas entram sozinhas em Lançamentos no dia de cada uma. Não lance essas contas pelo formulário, senão contam duas vezes.</p>
+          <section class="secao" id="sec-contas">
+            <h3>Contas fixas <small>${brl(totalContas)} em ${mesTxt}</small></h3>
+            <p class="apoio-secao">Elas entram sozinhas em Lançamentos no dia de cada uma, só entre o mês de início e o de fim. Não lance essas contas pelo formulário, senão contam duas vezes.</p>
             <form class="form-conta" id="f-conta" novalidate>
-              <label class="campo c-nome"><span>Conta</span><input id="ct-nome" type="text" autocomplete="off" placeholder="Ex.: Aluguel" maxlength="60"></label>
-              <label class="campo"><span>Valor</span><input id="ct-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 1.500,00" maxlength="14"></label>
-              <label class="campo"><span>Dia</span><input id="ct-dia" type="number" inputmode="numeric" min="1" max="31" placeholder="10"></label>
-              <label class="campo"><span>Categoria</span><select id="ct-cat">${opcoes(cats, 'Contas fixas')}</select></label>
-              <label class="campo"><span>Paga com</span><select id="ct-forma">${opcoes(formas, 'Pix')}</select></label>
-              <button class="btn" type="submit">Adicionar conta</button>
+              <label class="campo c-nome"><span>Conta</span><input id="ct-nome" type="text" autocomplete="off" placeholder="Ex.: Aluguel" maxlength="60" value="${esc(ed?.nome || '')}"></label>
+              <label class="campo"><span>Valor</span><input id="ct-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 1.500,00" maxlength="14" value="${ed ? ed.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : ''}"></label>
+              <label class="campo"><span>Dia</span><input id="ct-dia" type="number" inputmode="numeric" min="1" max="31" placeholder="10" value="${ed?.dia || ''}"></label>
+              <label class="campo"><span>Categoria</span><select id="ct-cat">${opcoes(cats, ed?.categoria || 'Contas fixas')}</select></label>
+              <label class="campo"><span>Paga com</span><select id="ct-forma">${opcoes(formas, ed?.forma || 'Pix')}</select></label>
+              <label class="campo c-cartao${(ed?.forma === 'Crédito') && cartoesL.length ? '' : ' escondido'}"><span>Cartão</span><select id="ct-cartao">${cartoesL.map(c => `<option value="${esc(c.id)}"${c.id === ed?.cartao ? ' selected' : ''}>${esc(c.nome)}</option>`).join('')}</select></label>
+              <label class="campo"><span>Começa em</span><input id="ct-inicio" type="month" value="${ed?.inicio || chaveMes(hoje)}"></label>
+              <label class="campo"><span>Termina em <small>(opcional)</small></span><input id="ct-fim" type="month" value="${ed?.fim || ''}"></label>
+              <label class="campo"><span>ou nº de meses</span><input id="ct-meses" type="number" inputmode="numeric" min="1" max="120" placeholder="Ex.: 6"></label>
+              <p class="dica c-dica" id="ct-dica">${dicaPeriodo(ed?.inicio || chaveMes(hoje), ed?.fim || '')}</p>
+              <button class="btn" type="submit">${ed ? 'Salvar alterações' : 'Adicionar conta'}</button>
+              ${ed ? '<button class="btn secundario" type="button" id="ct-cancelar">Cancelar edição</button>' : ''}
             </form>
             <div class="msg" id="ct-msg" role="status"></div>
-            ${contas.length ? contas.map(c => `<div class="linha"><div class="esq"><div>${esc(c.nome)}</div><small>Dia ${c.dia}, ${esc(c.categoria)}, ${esc(c.forma)}</small></div><div class="dir"><span class="valor num">${brl(c.valor)}</span> ${btnRemover(c.id, 'removerConta')}</div></div>`).join('')
-              : '<p class="vazio">Nenhuma conta fixa cadastrada.</p>'}
+            ${contas.length ? contas.map(c => {
+              const ativa = contaNoMes(c, chave), acabou = c.fim && c.fim < chaveMes(hoje), futura = c.inicio && c.inicio > chaveMes(hoje);
+              const periodo = c.fim ? `${mesCurtoTxt(c.inicio)} a ${mesCurtoTxt(c.fim)}${acabou ? ', terminou' : futura ? '' : `, faltam ${mesesEntre(chaveMes(hoje), c.fim) + 1} ${mesesEntre(chaveMes(hoje), c.fim) === 0 ? 'mês' : 'meses'}`}` : `desde ${mesCurtoTxt(c.inicio)}, sem fim`;
+              const pag = c.forma === 'Crédito' && cartoesL.length ? `Crédito ${esc(cartaoDe(c.cartao)?.nome || '')}` : esc(c.forma);
+              return `<div class="linha${ativa ? '' : ' inativa'}"><div class="esq"><div>${esc(c.nome)}</div><small>Dia ${c.dia}, ${esc(c.categoria)}, ${pag}. ${periodo}${futura ? ', ainda não começou' : ''}.</small></div><div class="dir"><span class="valor num">${brl(c.valor)}</span> <button class="link" type="button" data-editar-conta="${esc(c.id)}">Editar</button> ${btnRemover(c.id, 'removerConta')}</div></div>`;
+            }).join('') : '<p class="vazio">Nenhuma conta fixa cadastrada.</p>'}
           </section>
 
           <section class="secao">
-            <h3>Cartão de crédito</h3>
-            <p class="apoio-secao">${aj.cartao ? `A fatura fecha no dia ${aj.cartao.fecha} e vence no dia ${aj.cartao.vence}.` : 'Sem cartão cadastrado: compras no crédito saem do saldo no dia da compra.'} Com o cartão cadastrado, elas saem do saldo no vencimento da fatura.</p>
-            <form class="form-linha" id="f-cartao" novalidate>
-              <label class="campo"><span>Fecha no dia</span><input id="cc-fecha" type="number" inputmode="numeric" min="1" max="31" value="${aj.cartao?.fecha || ''}" placeholder="3"></label>
-              <label class="campo"><span>Vence no dia</span><input id="cc-vence" type="number" inputmode="numeric" min="1" max="31" value="${aj.cartao?.vence || ''}" placeholder="10"></label>
-              <button class="btn" type="submit">Salvar cartão</button>
+            <h3>Cartões de crédito</h3>
+            <p class="apoio-secao">Com os cartões cadastrados, você escolhe o cartão ao lançar no crédito, e cada compra sai do saldo no vencimento da fatura daquele cartão.</p>
+            <form class="form-conta" id="f-cartao" novalidate>
+              <label class="campo c-nome"><span>Nome do cartão</span><input id="cc-nome" type="text" autocomplete="off" placeholder="Ex.: Nubank" maxlength="30" value="${esc(edC?.nome || '')}"></label>
+              <label class="campo"><span>Fecha no dia</span><input id="cc-fecha" type="number" inputmode="numeric" min="1" max="31" placeholder="3" value="${edC?.fecha || ''}"></label>
+              <label class="campo"><span>Vence no dia</span><input id="cc-vence" type="number" inputmode="numeric" min="1" max="31" placeholder="10" value="${edC?.vence || ''}"></label>
+              <button class="btn" type="submit">${edC ? 'Salvar cartão' : 'Adicionar cartão'}</button>
+              ${edC ? '<button class="btn secundario" type="button" id="cc-cancelar">Cancelar edição</button>' : ''}
             </form>
-            ${aj.cartao ? '<button class="link perigo" type="button" id="cc-remover">Não uso cartão de crédito</button>' : ''}
             <div class="msg" id="cc-msg" role="status"></div>
+            ${cartoesL.length ? cartoesL.map(c => {
+              const gasto = (D.lancamentos || []).filter(l => l.forma === 'Crédito' && cartaoDe(l.cartao)?.id === c.id && String(l.data).startsWith(chave)).reduce((s2, l) => s2 + l.valor, 0);
+              return `<div class="linha"><div class="esq"><div>${esc(c.nome)}</div><small>Fecha dia ${c.fecha}, vence dia ${c.vence}</small></div><div class="dir"><span class="valor num">${brl(gasto)}</span><small>em ${mesTxt}</small> <button class="link" type="button" data-editar-cartao="${esc(c.id)}">Editar</button> ${btnRemover(c.id, 'removerCartao')}</div></div>`;
+            }).join('') : '<p class="vazio">Nenhum cartão cadastrado: compras no crédito saem do saldo no dia da compra.</p>'}
           </section>
 
           <section class="secao">
@@ -1282,7 +1328,7 @@
       const dados = montar(msg); if (!dados) return;
       btn.disabled = true; const rot = btn.textContent; btn.textContent = 'Salvando…';
       try {
-        if (await gravar(dados.acao, dados.corpo)) { renderConteudo(); const m2 = $(msgSel); if (m2) { m2.className = 'msg info'; m2.textContent = okTxt; } }
+        if (await gravar(dados.acao, dados.corpo)) { E.editConta = null; E.editCartao = null; renderConteudo(); const m2 = $(msgSel); if (m2) { m2.className = 'msg info'; m2.textContent = okTxt; } }
       } catch (e) { msg.className = 'msg erro'; msg.textContent = e.message; btn.disabled = false; btn.textContent = rot; }
     };
     const dia = id => { const n = Number($(id).value); return Number.isInteger(n) && n >= 1 && n <= 31 ? n : null; };
@@ -1311,20 +1357,42 @@
       return { acao: 'adicionarVariavel', corpo: { valor, descricao, mes: chave, dia: d } };
     }, 'Variável adicionado.'); };
 
+    // período da conta: fim direto ou nº de meses
+    const atualizarDica = () => { $('#ct-dica').textContent = dicaPeriodo($('#ct-inicio').value, $('#ct-fim').value); };
+    $('#ct-meses').addEventListener('input', () => {
+      const n = Number($('#ct-meses').value), ini = $('#ct-inicio').value;
+      if (n >= 1 && /^\d{4}-\d{2}$/.test(ini)) { const [a2, m2] = ini.split('-').map(Number); const f = new Date(a2, m2 - 1 + n - 1, 1); $('#ct-fim').value = chaveMes(f); }
+      atualizarDica();
+    });
+    ['#ct-inicio', '#ct-fim'].forEach(id => $(id).addEventListener('input', () => { if (id === '#ct-fim') $('#ct-meses').value = ''; atualizarDica(); }));
+    $('#ct-forma').addEventListener('change', () => $('.c-cartao').classList.toggle('escondido', !($('#ct-forma').value === 'Crédito' && cartoesL.length)));
+
     $('#f-conta').onsubmit = ev => { ev.preventDefault(); enviarForm(ev.target, '#ct-msg', msg => {
       const nome = $('#ct-nome').value.trim(), valor = lerValor($('#ct-valor').value), d = dia('#ct-dia');
+      const inicio = $('#ct-inicio').value, fim = $('#ct-fim').value, forma = $('#ct-forma').value;
       if (nome.length < 2) return erro(msg, 'Dê um nome à conta. Ex.: Aluguel', '#ct-nome');
       if (!(valor > 0)) return erro(msg, 'Digite o valor da conta.', '#ct-valor');
       if (!d) return erro(msg, 'Diga o dia do mês em que ela vence (1 a 31).', '#ct-dia');
-      return { acao: 'salvarConta', corpo: { nome, valor, dia: d, categoria: $('#ct-cat').value, forma: $('#ct-forma').value } };
-    }, 'Conta adicionada.'); };
+      if (!/^\d{4}-\d{2}$/.test(inicio)) return erro(msg, 'Escolha o mês em que a conta começa.', '#ct-inicio');
+      if (fim && fim < inicio) return erro(msg, 'O mês final precisa ser depois do mês de início.', '#ct-fim');
+      const corpo = { nome, valor, dia: d, categoria: $('#ct-cat').value, forma, inicio, fim, cartao: forma === 'Crédito' ? $('#ct-cartao').value : '' };
+      if (E.editConta) corpo.id = E.editConta;
+      return { acao: 'salvarConta', corpo };
+    }, ed ? 'Conta atualizada.' : 'Conta adicionada.'); };
+    const ctCanc = $('#ct-cancelar'); if (ctCanc) ctCanc.onclick = () => { E.editConta = null; renderConteudo(); };
+    $$('[data-editar-conta]').forEach(b => b.onclick = () => { E.editConta = b.dataset.editarConta; renderConteudo(); $('#sec-contas').scrollIntoView({ behavior: movOk() ? 'smooth' : 'auto', block: 'start' }); $('#ct-nome').focus({ preventScroll: true }); });
 
     $('#f-cartao').onsubmit = ev => { ev.preventDefault(); enviarForm(ev.target, '#cc-msg', msg => {
-      const fecha = dia('#cc-fecha'), vence = dia('#cc-vence');
+      const nome = $('#cc-nome').value.trim(), fecha = dia('#cc-fecha'), vence = dia('#cc-vence');
+      if (nome.length < 2) return erro(msg, 'Dê um nome ao cartão. Ex.: Nubank', '#cc-nome');
       if (!fecha) return erro(msg, 'Diga o dia em que a fatura fecha.', '#cc-fecha');
       if (!vence) return erro(msg, 'Diga o dia em que a fatura vence.', '#cc-vence');
-      return { acao: 'salvarAjustes', corpo: { cartao: { fecha, vence } } };
-    }, 'Cartão salvo.'); };
+      const corpo = { nome, fecha, vence };
+      if (E.editCartao) corpo.id = E.editCartao;
+      return { acao: 'salvarCartao', corpo };
+    }, edC ? 'Cartão atualizado.' : 'Cartão adicionado.'); };
+    const ccCanc = $('#cc-cancelar'); if (ccCanc) ccCanc.onclick = () => { E.editCartao = null; renderConteudo(); };
+    $$('[data-editar-cartao]').forEach(b => b.onclick = () => { E.editCartao = b.dataset.editarCartao; renderConteudo(); $('#cc-nome').focus(); });
 
     const esq = $('#b-esquecer');
     if (esq) esq.onclick = async () => {
@@ -1335,8 +1403,6 @@
       renderConteudo();
       avisoRapido('Este aparelho foi esquecido. Na próxima vez, entre com a senha.');
     };
-    const ccRem = $('#cc-remover');
-    if (ccRem) ccRem.onclick = async () => { ccRem.disabled = true; try { if (await gravar('salvarAjustes', { cartao: null })) renderConteudo(); } catch (e) { ccRem.textContent = e.message; } };
 
     // remover em dois toques, sem diálogo
     $$('[data-remover]').forEach(b => b.onclick = async () => {

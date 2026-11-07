@@ -46,7 +46,7 @@ const SEG = {
   aparelhoDias: 60       // "lembrar de mim": dias sem precisar da senha (renova a cada uso)
 };
 
-const VERSAO = '2.4.0';
+const VERSAO = '2.5.0';
 
 const ABA = { respostas: 'Respostas', lanc: 'Lançamentos', tetos: 'Tetos', resumo: 'Resumo', links: 'Links', receitas: 'Receitas', contas: 'Contas fixas' };
 
@@ -87,6 +87,8 @@ const ROTAS = {
   lancar: c => { const s = Sessao.validar(c.token); Lancamentos.criar(c, s); return Dados.painel(s); },
   editarLancamento: c => { const s = Sessao.validar(c.token); Lancamentos.editar(c); return Dados.painel(s); },
   removerLancamento: c => { const s = Sessao.validar(c.token); Lancamentos.remover(c); return Dados.painel(s); },
+  salvarCartao: c => { const s = Sessao.validar(c.token); Ajustes.salvarCartao(c); return Dados.painel(s); },
+  removerCartao: c => { const s = Sessao.validar(c.token); Ajustes.removerCartao(c); return Dados.painel(s); },
   salvarAjustes: c => { const s = Sessao.validar(c.token); Ajustes.salvar(c); return Dados.painel(s); }
 };
 
@@ -524,16 +526,16 @@ const Aparelho = {
 const Lancamentos = {
   aba() {
     const a = Dados.planilha().getSheetByName(ABA.lanc);
-    if (a.getRange(1, 8).getValue() !== 'ID') {
-      a.getRange(1, 7, 1, 2).setValues([['Lançado em', 'ID']]).setFontWeight('bold').setBackground('#E8EAF6');
-      a.getRange('H:H').setNumberFormat('@');
+    if (a.getRange(1, 9).getValue() !== 'Cartão') {
+      a.getRange(1, 7, 1, 3).setValues([['Lançado em', 'ID', 'Cartão']]).setFontWeight('bold').setBackground('#E8EAF6');
+      a.getRange('H:I').setNumberFormat('@');
     }
     return a;
   },
   validar(c) {
     const data = V.data(c.data), valor = V.valor(c.valor), categoria = V.categoria(c.categoria), forma = V.forma(c.forma);
     const [y, m, d] = data.split('-').map(Number);
-    return { data: new Date(y, m - 1, d, 12), valor, categoria, forma, descricao: V.texto(c.descricao, 200) };
+    return { data: new Date(y, m - 1, d, 12), valor, categoria, forma, descricao: V.texto(c.descricao, 200), cartao: Ajustes.cartaoValido(forma, c.cartao) };
   },
   linhaDe(a, id) {
     if (!/^[a-f0-9]{12}$/.test(String(id || ''))) throw new ApiErro('id_invalido', 'Gasto não encontrado.');
@@ -543,11 +545,15 @@ const Lancamentos = {
   },
   criar(c) {
     const l = this.validar(c);
-    comTrava_(() => this.aba().appendRow([l.data, l.valor, l.categoria, l.forma, l.descricao, 'App', new Date(), aleatorio_().slice(0, 12)]));
+    comTrava_(() => this.aba().appendRow([l.data, l.valor, l.categoria, l.forma, l.descricao, 'App', new Date(), aleatorio_().slice(0, 12), l.cartao]));
   },
   editar(c) {
     const l = this.validar(c);
-    comTrava_(() => { const a = this.aba(); a.getRange(this.linhaDe(a, c.id), 1, 1, 5).setValues([[l.data, l.valor, l.categoria, l.forma, l.descricao]]); });
+    comTrava_(() => {
+      const a = this.aba(), linha = this.linhaDe(a, c.id);
+      a.getRange(linha, 1, 1, 5).setValues([[l.data, l.valor, l.categoria, l.forma, l.descricao]]);
+      a.getRange(linha, 9).setNumberFormat('@').setValue(l.cartao);
+    });
   },
   remover(c) {
     comTrava_(() => { const a = this.aba(); a.deleteRow(this.linhaDe(a, c.id)); });
@@ -570,7 +576,7 @@ const Lancamentos = {
    ===================================================================== */
 
 const Contas = {
-  CAB: ['ID', 'Conta', 'Valor', 'Dia', 'Categoria', 'Forma de pagamento', 'Ativa', 'Criada em'],
+  CAB: ['ID', 'Conta', 'Valor', 'Dia', 'Categoria', 'Forma de pagamento', 'Ativa', 'Criada em', 'Início', 'Fim', 'Cartão'],
   aba() {
     const ss = Dados.planilha();
     let a = ss.getSheetByName(ABA.contas);
@@ -580,7 +586,11 @@ const Contas = {
       a.setFrozenRows(1);
       a.getRange('A:A').setNumberFormat('@');
       a.getRange('C2:C').setNumberFormat('"R$" #,##0.00');
-      a.setColumnWidths(1, 8, 130);
+      a.setColumnWidths(1, 11, 130);
+    }
+    if (a.getRange(1, 11).getValue() !== 'Cartão') {
+      a.getRange(1, 9, 1, 3).setValues([['Início', 'Fim', 'Cartão']]).setFontWeight('bold').setBackground('#E8EAF6');
+      a.getRange('I:K').setNumberFormat('@');
     }
     return a;
   },
@@ -591,17 +601,36 @@ const Contas = {
       id: String(l[0]), nome: String(l[1]), valor: Number(l[2]) || 0, dia: Number(l[3]) || 1,
       categoria: String(l[4] || 'Contas fixas'), forma: String(l[5] || 'Pix'),
       ativa: l[6] !== false && String(l[6]).toLowerCase() !== 'não',
-      criada: l[7] instanceof Date ? Utilities.formatDate(l[7], CONFIG.fuso, 'yyyy-MM-dd') : String(l[7] || '')
+      criada: l[7] instanceof Date ? Utilities.formatDate(l[7], CONFIG.fuso, 'yyyy-MM-dd') : String(l[7] || ''),
+      inicio: mesTxt_(l[8]) || (l[7] instanceof Date ? Utilities.formatDate(l[7], CONFIG.fuso, 'yyyy-MM') : ''),
+      fim: mesTxt_(l[9]),
+      cartao: String(l[10] || '')
     }));
   },
   salvar(c) {
     const nome = V.texto(c.nome, 60);
     if (nome.length < 2) throw new ApiErro('nome_invalido', 'Dê um nome à conta. Ex.: Aluguel');
     const valor = V.valor(c.valor), dia = V.dia(c.dia, 1), categoria = V.categoria(c.categoria), forma = V.forma(c.forma);
+    const inicio = V.mes(c.inicio), fim = c.fim ? V.mes(c.fim) : '';
+    if (fim && fim < inicio) throw new ApiErro('periodo_invalido', 'O mês final precisa ser depois do mês de início.');
+    const cartao = Ajustes.cartaoValido(forma, c.cartao);
     comTrava_(() => {
-      const a = this.aba(), id = aleatorio_().slice(0, 12), linha = a.getLastRow() + 1;
+      const a = this.aba();
+      if (c.id) { // editar
+        const id = String(c.id);
+        if (!/^[a-f0-9]{12}$/.test(id)) throw new ApiErro('id_invalido', 'Conta não encontrada.');
+        const vals = a.getDataRange().getValues();
+        for (let i = vals.length - 1; i >= 1; i--) if (String(vals[i][0]) === id) {
+          a.getRange(i + 1, 2, 1, 5).setValues([[nome, valor, dia, categoria, forma]]);
+          a.getRange(i + 1, 9, 1, 3).setNumberFormat('@').setValues([[inicio, fim, cartao]]);
+          return;
+        }
+        throw new ApiErro('nao_encontrado', 'Essa conta não existe mais.');
+      }
+      const id = aleatorio_().slice(0, 12), linha = a.getLastRow() + 1;
       a.getRange(linha, 1).setNumberFormat('@');
-      a.getRange(linha, 1, 1, 8).setValues([[id, nome, valor, dia, categoria, forma, true, new Date()]]);
+      a.getRange(linha, 9, 1, 3).setNumberFormat('@');
+      a.getRange(linha, 1, 1, 11).setValues([[id, nome, valor, dia, categoria, forma, true, new Date(), inicio, fim, cartao]]);
     });
   },
   remover(c) {
@@ -616,6 +645,13 @@ const Contas = {
 };
 
 /** Rotina diária: lança as contas fixas que vencem até hoje e ainda não foram lançadas neste mês. */
+/** Mês 'yyyy-MM' a partir de texto ou data da planilha. */
+function mesTxt_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, CONFIG.fuso, 'yyyy-MM');
+  const s = String(v || '');
+  return /^\d{4}-\d{2}$/.test(s) ? s : '';
+}
+
 function lancarContasDoDia() {
   const agora = new Date();
   const ymd = Utilities.formatDate(agora, CONFIG.fuso, 'yyyy-MM-dd');
@@ -631,7 +667,8 @@ function lancarContasDoDia() {
     const marca = `CF:${ct.id}:${mes}`;
     if (diaConta > d || props.getProperty(marca)) return;
     if (ct.criada && ct.criada > venc) return; // conta criada depois do vencimento deste mês
-    lanc.appendRow([new Date(y, m - 1, diaConta, 12), ct.valor, ct.categoria, ct.forma, ct.nome, 'Conta fixa', new Date(), aleatorio_().slice(0, 12)]);
+    if ((ct.inicio && mes < ct.inicio) || (ct.fim && mes > ct.fim)) return; // fora do período da conta
+    lanc.appendRow([new Date(y, m - 1, diaConta, 12), ct.valor, ct.categoria, ct.forma, ct.nome, 'Conta fixa', new Date(), aleatorio_().slice(0, 12), ct.cartao || '']);
     props.setProperty(marca, '1');
   });
 }
@@ -641,14 +678,53 @@ function lancarContasDoDia() {
    ===================================================================== */
 
 const Ajustes = {
-  ler() { return Store.get('AJUSTES') || { saldo: null, cartao: null }; },
+  ler() {
+    const a = Store.get('AJUSTES') || { saldo: null };
+    if (!Array.isArray(a.cartoes)) { // versão anterior: um cartão só
+      a.cartoes = a.cartao ? [{ id: '000000000001', nome: 'Cartão principal', fecha: a.cartao.fecha, vence: a.cartao.vence }] : [];
+    }
+    delete a.cartao;
+    return a;
+  },
+  /** Crédito precisa de um cartão cadastrado (se houver cartões); outras formas não levam cartão. */
+  cartaoValido(forma, id) {
+    if (forma !== 'Crédito') return '';
+    const cartoes = this.ler().cartoes;
+    if (!cartoes.length) return '';
+    const s = String(id || '');
+    if (!cartoes.some(c => c.id === s)) throw new ApiErro('cartao_invalido', 'Escolha em qual cartão foi a compra.');
+    return s;
+  },
+  salvarCartao(c) {
+    const nome = V.texto(c.nome, 30);
+    if (nome.length < 2) throw new ApiErro('nome_invalido', 'Dê um nome ao cartão. Ex.: Nubank');
+    const fecha = V.dia(c.fecha), vence = V.dia(c.vence);
+    if (!fecha || !vence) throw new ApiErro('dia_invalido', 'Informe o dia de fechamento e o de vencimento.');
+    comTrava_(() => {
+      const a = this.ler();
+      if (c.id) {
+        const x = a.cartoes.find(k => k.id === String(c.id));
+        if (!x) throw new ApiErro('nao_encontrado', 'Esse cartão não existe mais.');
+        Object.assign(x, { nome, fecha, vence });
+      } else {
+        if (a.cartoes.length >= 12) throw new ApiErro('limite', 'Limite de 12 cartões.');
+        a.cartoes.push({ id: aleatorio_().slice(0, 12), nome, fecha, vence });
+      }
+      Store.set('AJUSTES', a);
+    });
+  },
+  removerCartao(c) {
+    comTrava_(() => {
+      const a = this.ler(), antes = a.cartoes.length;
+      a.cartoes = a.cartoes.filter(k => k.id !== String(c.id || ''));
+      if (a.cartoes.length === antes) throw new ApiErro('nao_encontrado', 'Esse cartão já foi removido.');
+      Store.set('AJUSTES', a);
+    });
+  },
   salvar(c) {
     const a = this.ler();
     if (c.saldo !== undefined) {
       a.saldo = c.saldo === null ? null : { valor: V.saldo(c.saldo.valor), data: V.data(c.saldo.data), em: new Date().toISOString() };
-    }
-    if (c.cartao !== undefined) {
-      a.cartao = c.cartao === null ? null : { fecha: V.dia(c.cartao.fecha), vence: V.dia(c.cartao.vence) };
     }
     Store.set('AJUSTES', a);
   }
@@ -668,7 +744,7 @@ const Dados = {
     const ss = this.planilha();
     const abaL = Lancamentos.aba();
     const valsL = abaL.getDataRange().getValues();
-    while (valsL[0].length < 8) valsL.forEach(l => l.push(''));
+    while (valsL[0].length < 9) valsL.forEach(l => l.push(''));
     comTrava_(() => Lancamentos.garantirIds(abaL, valsL));
     const lancamentos = valsL.slice(1)
       .filter(l => l[0] !== '' && l[1] !== '')
@@ -680,6 +756,7 @@ const Dados = {
         forma: String(l[3] || ''),
         descricao: String(l[4] || ''),
         origem: String(l[5] || ''),
+        cartao: String(l[8] || ''),
         criado: l[6] instanceof Date ? l[6].toISOString() : ''
       }));
     const tetos = ss.getSheetByName(ABA.tetos).getDataRange().getValues().slice(1)

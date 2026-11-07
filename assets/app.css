@@ -557,3 +557,24 @@ details.fd[open] .fd-linha { padding-bottom: 4px; }
 .campo { min-width: 0; }
 .campo input[type="date"], .campo input[type="month"] { -webkit-appearance: none; appearance: none; display: block; min-width: 0; max-width: 100%; text-align: left; }
 .campo input[type="date"]::-webkit-date-and-time-value, .campo input[type="month"]::-webkit-date-and-time-value { text-align: left; }
+
+/* =====================================================================
+   v2.5 · cartões e contas com período
+   ===================================================================== */
+.escondido { display: none !important; }
+.chips-cartao { margin-top: -6px; }
+.chips-cartao .apoio-secao { margin: 0; }
+.form-conta .c-dica { grid-column: 1 / -1; margin: -6px 0 12px; font-size: 13px; color: var(--tinta-2); }
+.form-conta .btn.secundario { grid-column: 1 / -1; margin-top: 8px; }
+.campo > span small { font-weight: 400; color: var(--tinta-2); }
+.linha.inativa .esq, .linha.inativa .valor { opacity: .55; }
+.linha .dir .link { font-size: 13px; padding: 4px 0 4px 10px; }
+@media (min-width: 560px) { .form-conta .c-cartao { grid-column: auto; } }
+@media (prefers-reduced-motion: no-preference) { .chips-cartao:not(.escondido) { animation: abrir var(--mov-curto) var(--mov-sai); } }
+.grade-secoes { grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 860px) { .grade-secoes { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); } }
+.grade-secoes > * { min-width: 0; }
+.form-conta, .form-linha { min-width: 0; }
+.form-conta > *, .form-linha > * { min-width: 0; }
+.linha .esq { flex: 1 1 auto; }
+.linha .dir { flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; row-gap: 2px; }

@@ -19,7 +19,7 @@
  *   gerarConvite()        código para outra pessoa criar conta (vale 48 h)
  *   desbloquear()         libera e-mails pausados ou bloqueados por senha errada
  *   listarUsuarios()      mostra quem tem conta
- *   encerrarTodasSessoes() derruba todos os acessos abertos
+ *   encerrarTodasSessoes() derruba todos os acessos e esquece os aparelhos lembrados
  *   removerUsuario()      apaga a conta de EMAIL_PARA_REMOVER
  */
 
@@ -42,10 +42,11 @@ const SEG = {
   bloqueio: { pausa1: 3, pausa2: 6, bloqueia: 9, seg1: 60, seg2: 300 },
   codigoMin: 15,          // validade do código de redefinição
   codigoTentativas: 5,
-  conviteHoras: 48
+  conviteHoras: 48,
+  aparelhoDias: 60       // "lembrar de mim": dias sem precisar da senha (renova a cada uso)
 };
 
-const VERSAO = '2.3.0';
+const VERSAO = '2.4.0';
 
 const ABA = { respostas: 'Respostas', lanc: 'Lançamentos', tetos: 'Tetos', resumo: 'Resumo', links: 'Links', receitas: 'Receitas', contas: 'Contas fixas' };
 
@@ -82,6 +83,10 @@ const ROTAS = {
   removerReceita: c => { const s = Sessao.validar(c.token); Receitas.remover(c); return Dados.painel(s); },
   salvarConta: c => { const s = Sessao.validar(c.token); Contas.salvar(c, s); return Dados.painel(s); },
   removerConta: c => { const s = Sessao.validar(c.token); Contas.remover(c); return Dados.painel(s); },
+  retomar: c => Aparelho.retomar(c),
+  lancar: c => { const s = Sessao.validar(c.token); Lancamentos.criar(c, s); return Dados.painel(s); },
+  editarLancamento: c => { const s = Sessao.validar(c.token); Lancamentos.editar(c); return Dados.painel(s); },
+  removerLancamento: c => { const s = Sessao.validar(c.token); Lancamentos.remover(c); return Dados.painel(s); },
   salvarAjustes: c => { const s = Sessao.validar(c.token); Ajustes.salvar(c); return Dados.painel(s); }
 };
 
@@ -335,7 +340,9 @@ const Auth = {
       };
       Store.set('u:' + email, usuario);
       if (total > 0) Store.del('CONVITE');
-      return Sessao.abrir(usuario);
+      const s = Sessao.abrir(usuario);
+      if (c.lembrar === true) s.aparelho = Aparelho.emitir(usuario, String(c.nomeAparelho || ''));
+      return s;
     });
   },
 
@@ -353,11 +360,13 @@ const Auth = {
       }
       Bloqueio.limpar(email);
       Sessao.limparVencidas();
-      return Sessao.abrir(u);
+      const s = Sessao.abrir(u);
+      if (c.lembrar === true) s.aparelho = Aparelho.emitir(u, String(c.nomeAparelho || ''));
+      return s;
     });
   },
 
-  sair(c) { Sessao.encerrar(c.token); return { saiu: true }; },
+  sair(c) { Sessao.encerrar(c.token); Aparelho.esquecer(c.aparelho); return { saiu: true }; },
 
   /** Sempre responde igual, exista ou não a conta (não revela e-mails cadastrados). */
   pedirCodigo(c) {
@@ -397,7 +406,10 @@ const Auth = {
       Store.del('r:' + email);
       Bloqueio.limpar(email);
       Sessao.encerrarDe(email); // derruba acessos antigos
-      return Sessao.abrir(u);
+      Aparelho.esquecerDe(email);
+      const s = Sessao.abrir(u);
+      if (c.lembrar === true) s.aparelho = Aparelho.emitir(u, String(c.nomeAparelho || ''));
+      return s;
     });
   }
 };
@@ -472,6 +484,87 @@ const Receitas = {
 };
 
 /* =====================================================================
+   LEMBRAR DE MIM  (token de aparelho, guardado só como hash)
+   A cada retomada o token é trocado por um novo: um token copiado
+   deixa de valer assim que o aparelho verdadeiro usa o dele.
+   ===================================================================== */
+
+const Aparelho = {
+  emitir(u, nome) {
+    const token = aleatorio_(), agora = Date.now();
+    Store.set('a:' + sha_(token), { email: u.email, nome: V.texto(nome, 40), criado: agora, ultimo: agora });
+    return token;
+  },
+  retomar(c) {
+    const token = String(c.aparelho || '');
+    if (!/^[a-f0-9]{64}$/.test(token)) throw new ApiErro('aparelho_invalido', 'Entre com sua senha.');
+    return comTrava_(() => {
+      const k = 'a:' + sha_(token), a = Store.get(k);
+      const u = a ? Store.get('u:' + a.email) : null;
+      if (!a || !u || u.ativo === false || Date.now() - a.ultimo > SEG.aparelhoDias * 86400000) {
+        if (a) Store.del(k);
+        throw new ApiErro('aparelho_invalido', 'Faz tempo que você não entra por aqui. Digite sua senha.');
+      }
+      Store.del(k);
+      const novo = aleatorio_();
+      Store.set('a:' + sha_(novo), { email: a.email, nome: a.nome, criado: a.criado, ultimo: Date.now() });
+      const s = Sessao.abrir(u);
+      s.aparelho = novo;
+      return s;
+    });
+  },
+  esquecer(token) { if (/^[a-f0-9]{64}$/.test(String(token || ''))) Store.del('a:' + sha_(token)); },
+  esquecerDe(email) { Store.chaves('a:').forEach(k => { const a = Store.get(k); if (!a || !email || a.email === email) Store.del(k); }); }
+};
+
+/* =====================================================================
+   LANÇAMENTOS PELO APP  (colunas G = Lançado em, H = ID)
+   ===================================================================== */
+
+const Lancamentos = {
+  aba() {
+    const a = Dados.planilha().getSheetByName(ABA.lanc);
+    if (a.getRange(1, 8).getValue() !== 'ID') {
+      a.getRange(1, 7, 1, 2).setValues([['Lançado em', 'ID']]).setFontWeight('bold').setBackground('#E8EAF6');
+      a.getRange('H:H').setNumberFormat('@');
+    }
+    return a;
+  },
+  validar(c) {
+    const data = V.data(c.data), valor = V.valor(c.valor), categoria = V.categoria(c.categoria), forma = V.forma(c.forma);
+    const [y, m, d] = data.split('-').map(Number);
+    return { data: new Date(y, m - 1, d, 12), valor, categoria, forma, descricao: V.texto(c.descricao, 200) };
+  },
+  linhaDe(a, id) {
+    if (!/^[a-f0-9]{12}$/.test(String(id || ''))) throw new ApiErro('id_invalido', 'Gasto não encontrado.');
+    const ids = a.getRange(1, 8, a.getLastRow(), 1).getValues();
+    for (let i = ids.length - 1; i >= 1; i--) if (String(ids[i][0]) === id) return i + 1;
+    throw new ApiErro('nao_encontrado', 'Esse gasto não existe mais. Toque em Atualizar.');
+  },
+  criar(c) {
+    const l = this.validar(c);
+    comTrava_(() => this.aba().appendRow([l.data, l.valor, l.categoria, l.forma, l.descricao, 'App', new Date(), aleatorio_().slice(0, 12)]));
+  },
+  editar(c) {
+    const l = this.validar(c);
+    comTrava_(() => { const a = this.aba(); a.getRange(this.linhaDe(a, c.id), 1, 1, 5).setValues([[l.data, l.valor, l.categoria, l.forma, l.descricao]]); });
+  },
+  remover(c) {
+    comTrava_(() => { const a = this.aba(); a.deleteRow(this.linhaDe(a, c.id)); });
+  },
+  /** Dá ID às linhas antigas (formulário, digitadas na planilha). */
+  garantirIds(a, vals) {
+    let mudou = false;
+    const col = vals.map((l, i) => {
+      if (i === 0) return ['ID'];
+      if (l[0] !== '' && !l[7]) { mudou = true; return [aleatorio_().slice(0, 12)]; }
+      return [l[7] || ''];
+    });
+    if (mudou) { a.getRange(1, 8, col.length, 1).setNumberFormat('@').setValues(col); col.forEach((x, i) => { vals[i][7] = x[0]; }); }
+  }
+};
+
+/* =====================================================================
    CONTAS FIXAS  (aba Contas fixas: ID | Conta | Valor | Dia | Categoria | Forma | Ativa | Criada em)
    A rotina diária lança cada conta em Lançamentos no dia dela (Origem: Conta fixa).
    ===================================================================== */
@@ -530,7 +623,7 @@ function lancarContasDoDia() {
   const ultimo = new Date(y, m, 0).getDate();
   const mes = ymd.slice(0, 7);
   const props = Store.p();
-  const lanc = Dados.planilha().getSheetByName(ABA.lanc);
+  const lanc = Lancamentos.aba();
   Contas.listar().forEach(ct => {
     if (!ct.ativa) return;
     const diaConta = Math.min(ct.dia, ultimo);
@@ -538,7 +631,7 @@ function lancarContasDoDia() {
     const marca = `CF:${ct.id}:${mes}`;
     if (diaConta > d || props.getProperty(marca)) return;
     if (ct.criada && ct.criada > venc) return; // conta criada depois do vencimento deste mês
-    lanc.appendRow([new Date(y, m - 1, diaConta, 12), ct.valor, ct.categoria, ct.forma, ct.nome, 'Conta fixa', new Date()]);
+    lanc.appendRow([new Date(y, m - 1, diaConta, 12), ct.valor, ct.categoria, ct.forma, ct.nome, 'Conta fixa', new Date(), aleatorio_().slice(0, 12)]);
     props.setProperty(marca, '1');
   });
 }
@@ -573,9 +666,14 @@ const Dados = {
   },
   painel(sessao) {
     const ss = this.planilha();
-    const lancamentos = ss.getSheetByName(ABA.lanc).getDataRange().getValues().slice(1)
+    const abaL = Lancamentos.aba();
+    const valsL = abaL.getDataRange().getValues();
+    while (valsL[0].length < 8) valsL.forEach(l => l.push(''));
+    comTrava_(() => Lancamentos.garantirIds(abaL, valsL));
+    const lancamentos = valsL.slice(1)
       .filter(l => l[0] !== '' && l[1] !== '')
       .map(l => ({
+        id: String(l[7] || ''),
         data: l[0] instanceof Date ? Utilities.formatDate(l[0], CONFIG.fuso, 'yyyy-MM-dd') : String(l[0]),
         valor: Number(String(l[1]).replace(',', '.')) || 0,
         categoria: String(l[2] || 'Outros'),
@@ -587,7 +685,15 @@ const Dados = {
     const tetos = ss.getSheetByName(ABA.tetos).getDataRange().getValues().slice(1)
       .filter(l => l[0] && CONFIG.categorias.includes(String(l[0])))
       .map(l => ({ categoria: String(l[0]), teto: Number(l[1]) || 0 }));
-    return { atualizado: new Date().toISOString(), usuario: { nome: sessao.nome }, lancamentos, tetos, receitas: Receitas.listar(), contas: Contas.listar(), ajustes: Ajustes.ler(), categorias: CONFIG.categorias, formas: CONFIG.formasPagamento };
+    return { atualizado: new Date().toISOString(), usuario: { nome: sessao.nome }, lancamentos, tetos, receitas: Receitas.listar(), contas: Contas.listar(), ajustes: Ajustes.ler(), categorias: CONFIG.categorias, formas: CONFIG.formasPagamento, formulario: this.linkFormulario() };
+  },
+  linkFormulario() {
+    const p = Store.p();
+    let url = p.getProperty('FORM_URL');
+    if (!url && p.getProperty('FORM_ID')) {
+      try { url = FormApp.openById(p.getProperty('FORM_ID')).getPublishedUrl(); p.setProperty('FORM_URL', url); } catch (_) { url = ''; }
+    }
+    return url || '';
   }
 };
 
@@ -735,16 +841,15 @@ function aoEnviarFormulario(e) {
     : Utilities.formatDate(r.getTimestamp(), CONFIG.fuso, 'yyyy-MM-dd');
   const [y, m, d] = ymd.split('-').map(Number);
 
-  const abaLanc = Dados.planilha().getSheetByName(ABA.lanc);
-  if (abaLanc.getRange(1, 7).getValue() !== 'Lançado em') abaLanc.getRange(1, 7).setValue('Lançado em').setFontWeight('bold').setBackground('#E8EAF6');
-  abaLanc.appendRow([
+  Lancamentos.aba().appendRow([
     new Date(y, m - 1, d, 12),
     valor,
     resp[TITULO.categoria] || 'Outros',
     resp[TITULO.forma] || '',
     String(resp[TITULO.descricao] || '').slice(0, 200),
     'Formulário',
-    new Date() // Lançado em: separa o que entrou antes e depois do saldo informado
+    new Date(), // Lançado em: separa o que entrou antes e depois do saldo informado
+    aleatorio_().slice(0, 12)
   ]);
 }
 
@@ -797,6 +902,7 @@ function listarUsuarios() {
 
 function encerrarTodasSessoes() {
   Store.chaves('s:').forEach(k => Store.del(k));
+  Aparelho.esquecerDe(null); // aparelhos lembrados também precisam da senha de novo
   Logger.log('🚪 Todas as sessões foram encerradas.');
 }
 
@@ -805,5 +911,6 @@ function removerUsuario() {
   if (!email) throw new Error('Preencha EMAIL_PARA_REMOVER antes de rodar.');
   Store.del('u:' + email);
   Sessao.encerrarDe(email);
+  Aparelho.esquecerDe(email);
   Logger.log('🗑️  Conta removida: ' + email);
 }

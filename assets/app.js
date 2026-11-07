@@ -7,7 +7,7 @@
 
   const CFG = Object.assign({ api: '', nome: 'Minhas finanças', sessaoMin: 30 }, window.FINANCAS || {});
   const PBKDF2_ITER = 600000; // OWASP 2023 para PBKDF2-HMAC-SHA256
-  const K = { sessao: 'fin.sessao', cache: 'fin.cache', email: 'fin.email', privado: 'fin.privado' };
+  const K = { sessao: 'fin.sessao', cache: 'fin.cache', email: 'fin.email', privado: 'fin.privado', aparelho: 'fin.aparelho', forma: 'fin.forma' };
 
   /* ------------------------------ util ------------------------------ */
   const $ = (s, r = document) => r.querySelector(s);
@@ -184,6 +184,7 @@
     marcar() { Ociosidade.ultimo = Date.now(); },
     verificar() {
       if (!Sessao.atual()) return;
+      if (ls.get(K.aparelho)) return; // aparelho lembrado: a sessão é renovada sozinha na próxima chamada
       if (Date.now() - Ociosidade.ultimo > CFG.sessaoMin * 60000) sair('Você ficou um tempo sem usar. Por segurança, entre de novo.');
     },
     iniciar() {
@@ -205,7 +206,9 @@
     clearInterval(timerVivo);
     E.dados = null;
     E.vistos.clear(); E.vistas.clear(); E.lancVistos = null;
-    if (s?.token) api('sair', { token: s.token }).catch(() => { });
+    const aparelho = ls.get(K.aparelho);
+    ls.set(K.aparelho, null);
+    if (s?.token || aparelho) api('sair', { token: s?.token, aparelho }).catch(() => { });
     telaAcesso('entrar', msg ? { tipo: 'info', texto: msg } : null);
   }
 
@@ -256,6 +259,7 @@
         <label class="campo"><span>Senha</span>
           <div class="senha"><input id="f-senha" type="password" autocomplete="current-password" required maxlength="128">
           <button type="button" data-acao="ver" aria-pressed="false">Mostrar</button></div></label>
+        <label class="lembrar"><input id="f-lembrar" type="checkbox" checked><span>Lembrar de mim neste aparelho</span></label>
         <div class="msg" id="f-msg" role="alert"></div>
         <button class="btn largo" id="f-enviar" type="submit">Entrar</button>
         <button class="link" type="button" data-modo="esqueci">Esqueci minha senha</button>`,
@@ -264,6 +268,7 @@
         <label class="campo"><span>E-mail</span><input id="f-email" type="email" autocomplete="username" inputmode="email" required maxlength="120"></label>
         ${camposSenhaNova('Senha')}
         ${temConta ? '<label class="campo"><span>Código de convite</span><input id="f-convite" type="text" autocomplete="off" autocapitalize="characters" required maxlength="20"><span class="dica">Gerado pela função gerarConvite no Apps Script. Vale 48 horas.</span></label>' : ''}
+        <label class="lembrar"><input id="f-lembrar" type="checkbox" checked><span>Lembrar de mim neste aparelho</span></label>
         <div class="msg" id="f-msg" role="alert"></div>
         <button class="btn largo" id="f-enviar" type="submit">Criar conta</button>`,
       esqueci: `
@@ -274,6 +279,7 @@
       redefinir: `
         <label class="campo"><span>Código do e-mail</span><input id="f-codigo" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></label>
         ${camposSenhaNova('Nova senha')}
+        <label class="lembrar"><input id="f-lembrar" type="checkbox" checked><span>Lembrar de mim neste aparelho</span></label>
         <div class="msg" id="f-msg" role="alert"></div>
         <button class="btn largo" id="f-enviar" type="submit">Salvar nova senha</button>
         <button class="link" type="button" data-modo="esqueci">Enviar outro código</button>`
@@ -295,7 +301,7 @@
             <button type="button" role="tab" data-modo="criar" aria-selected="${modo === 'criar'}">Criar conta</button>
           </div>` : '<div class="espaco"></div>'}
           <form id="f" novalidate>${formularios[modo]}</form>
-          <p class="nota-seguranca">${ICONE.cadeado}<span>Sua senha não sai deste aparelho. O acesso sai sozinho depois de ${CFG.sessaoMin} minutos parado, e 3 senhas erradas pausam novas tentativas.</span></p>
+          <p class="nota-seguranca">${ICONE.cadeado}<span>Sua senha não sai deste aparelho. Sem "Lembrar de mim", o acesso sai sozinho depois de ${CFG.sessaoMin} minutos parado. Três senhas erradas pausam novas tentativas.</span></p>
         </section>
       </main>`;
 
@@ -366,7 +372,7 @@
         ocupado('Entrando…');
         const chave = await derivarChave(email, senha);
         ls.set(K.email, email);
-        entrarNoPainel(await api('entrar', { email, chave }));
+        entrarNoPainel(await api('entrar', Object.assign({ email, chave }, lembrarOpts())));
         return;
       }
 
@@ -384,8 +390,8 @@
         const chave = await derivarChave(alvo, senha);
         ls.set(K.email, alvo);
         const s = modo === 'criar'
-          ? await api('cadastrar', { nome, email, chave, convite })
-          : await api('redefinir', { email: alvo, codigo, chave });
+          ? await api('cadastrar', Object.assign({ nome, email, chave, convite }, lembrarOpts()))
+          : await api('redefinir', Object.assign({ email: alvo, codigo, chave }, lembrarOpts()));
         entrarNoPainel(s);
         return;
       }
@@ -410,7 +416,14 @@
     }
   }
 
+  function nomeAparelho() {
+    const ua = navigator.userAgent;
+    return /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : 'Navegador';
+  }
+  const lembrarOpts = () => ($('#f-lembrar')?.checked ? { lembrar: true, nomeAparelho: nomeAparelho() } : {});
+
   function entrarNoPainel(s) {
+    ls.set(K.aparelho, s.aparelho || null);
     Sessao.salvar(s);
     Ociosidade.iniciar();
     E.dados = null;
@@ -465,15 +478,44 @@
     return gasto + futuras + (ritmo * peso + ritmoHist * (1 - peso)) * (ctx.diasMes - ctx.dia);
   }
 
+  /** Retoma a sessão com o aparelho lembrado (troca o token do aparelho a cada uso). */
+  async function retomar() {
+    const aparelho = ls.get(K.aparelho);
+    if (!aparelho) return false;
+    try {
+      const s = await api('retomar', { aparelho });
+      ls.set(K.aparelho, s.aparelho);
+      Sessao.salvar(s);
+      return true;
+    } catch (e) {
+      if (e.codigo === 'aparelho_invalido') ls.set(K.aparelho, null);
+      throw e;
+    }
+  }
+  let retomando = null;
+  /** Chamada autenticada: se a sessão venceu e o aparelho é lembrado, renova e tenta de novo. */
+  async function chamar(acao, dados = {}) {
+    const s = Sessao.atual();
+    try {
+      if (!s) throw new ErroApp('sessao_expirada', 'Sua sessão terminou. Entre de novo.');
+      return await api(acao, Object.assign({ token: s.token }, dados));
+    } catch (e) {
+      if (e.codigo !== 'sessao_expirada' || !ls.get(K.aparelho)) throw e;
+      retomando = retomando || retomar().finally(() => { retomando = null; });
+      await retomando;
+      return api(acao, Object.assign({ token: Sessao.atual().token }, dados));
+    }
+  }
+
   async function carregarDados() {
-    const s = Sessao.atual(); if (!s) return sair();
+    if (!Sessao.atual() && !ls.get(K.aparelho)) return sair();
     const rot = $('#atualizado'); if (rot) rot.textContent = 'Atualizando…';
     try {
-      E.dados = await api('dados', { token: s.token });
+      E.dados = await chamar('dados');
       ss.set(K.cache, E.dados);
       renderConteudo();
     } catch (e) {
-      if (e.codigo === 'sessao_expirada') return sair(e.message);
+      if (e.codigo === 'sessao_expirada' || e.codigo === 'aparelho_invalido') return sair(e.message);
       if (E.dados) { renderConteudo(); if ($('#atualizado')) $('#atualizado').textContent = e.message; }
       else if ($('#conteudo')) $('#conteudo').innerHTML = `<div class="faixa-aviso">${esc(e.message)}</div>`;
     }
@@ -481,13 +523,12 @@
 
   /** Escrita autenticada: o servidor devolve os dados já atualizados. */
   async function gravar(acao, dados) {
-    const s = Sessao.atual(); if (!s) return sair();
     try {
-      E.dados = await api(acao, Object.assign({ token: s.token }, dados));
+      E.dados = await chamar(acao, dados);
       ss.set(K.cache, E.dados);
       return true;
     } catch (e) {
-      if (e.codigo === 'sessao_expirada') { sair(e.message); return false; }
+      if (e.codigo === 'sessao_expirada' || e.codigo === 'aparelho_invalido') { sair(e.message); return false; }
       throw e;
     }
   }
@@ -518,6 +559,9 @@
           </div>
         </div>
         <div id="conteudo"><p class="carregando">Buscando seus lançamentos, ${esc(s?.nome || '')}…</p></div>
+        <button class="fab" id="b-lancar" type="button" aria-label="Lançar gasto"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>Lançar</span></button>
+        <dialog class="folha" id="folha" aria-labelledby="folha-titulo"></dialog>
+        <div class="aviso-rapido" id="aviso" role="status" aria-live="polite"></div>
         <footer class="rodape">
           <span class="ao-vivo"><i aria-hidden="true"></i><span id="atualizado"></span></span>
           <button class="btn secundario" id="b-atualizar" type="button">Atualizar</button>
@@ -534,6 +578,16 @@
     $('#b-prox').onclick = () => mudarMes(1);
     $('#b-atualizar').onclick = carregarDados;
     $$('[data-aba]').forEach(b => b.onclick = () => irPara(b.dataset.aba));
+    $('#b-lancar').onclick = () => abrirFolha();
+    // um só ouvinte para editar: linhas de lançamento no painel e no fluxo
+    $('#conteudo').addEventListener('click', ev => {
+      const alvo = ev.target.closest('[data-editar]');
+      if (alvo) { ev.preventDefault(); abrirFolha(alvo.dataset.editar); }
+    });
+    $('#conteudo').addEventListener('keydown', ev => {
+      const alvo = ev.target.closest('[data-editar]');
+      if (alvo && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); abrirFolha(alvo.dataset.editar); }
+    });
     posicionarIndicador($('.abas-painel'));
     if (E.dados) renderConteudo();
     vivo();
@@ -732,7 +786,7 @@
           ${x.t ? `<b class="t-marco" data-inicio="${w(x.t, escala)}" title="Teto ${brl(x.t)}"></b>` : ''}
         </div>
         <p class="linha2">${partes.join('. ')}.</p></div>`;
-    }).join('') : '<p class="vazio">Nenhum gasto neste mês. Lance pelo formulário e toque em Atualizar.</p>';
+    }).join('') : '<p class="vazio">Nenhum gasto neste mês. Toque em Lançar para registrar o primeiro.</p>';
 
     // ---------- formas e últimos ----------
     const porForma = {};
@@ -740,12 +794,15 @@
     const htmlFormas = Object.keys(porForma).length ? Object.entries(porForma).sort((a, b) => b[1] - a[1]).map(([f, val]) =>
       `<div class="linha"><div class="esq">${esc(f)}</div><div class="dir"><span class="valor num">${brl(val)}</span><small>${pct(val / total)}</small></div></div>`
     ).join('') : '<p class="vazio">Sem lançamentos.</p>';
-    const ult = [...lanc].sort((a, b) => String(b.data).localeCompare(String(a.data))).slice(0, 10);
+    const ordenados = [...lanc].sort((a, b) => String(b.data).localeCompare(String(a.data)) || String(b.criado).localeCompare(String(a.criado)));
+    const ult = E.verTodos ? ordenados : ordenados.slice(0, 10);
     const htmlUlt = ult.length ? ult.map(l => {
       const [, mm, dd] = String(l.data).split('-');
-      return `<div class="linha" data-lanc="${esc(`${l.data}|${l.valor}|${l.categoria}|${l.descricao}`)}"><div class="esq"><div>${esc(l.descricao || l.categoria)}</div>
-        <small>${dd}/${mm}, ${esc(l.categoria)}, ${esc(l.forma)}</small></div><div class="dir"><span class="valor num">${brl(l.valor)}</span></div></div>`;
-    }).join('') : '<p class="vazio">Sem lançamentos.</p>';
+      const editar = l.id ? ` data-editar="${esc(l.id)}" role="button" tabindex="0" aria-label="Editar ${esc(l.descricao || l.categoria)}, ${brl(l.valor)}"` : '';
+      return `<div class="linha${l.id ? ' editavel' : ''}" data-lanc="${esc(`${l.data}|${l.valor}|${l.categoria}|${l.descricao}`)}"${editar}><div class="esq"><div>${esc(l.descricao || l.categoria)}</div>
+        <small>${dd}/${mm}, ${esc(l.categoria)}, ${esc(l.forma)}${l.origem === 'Conta fixa' ? ', conta fixa' : ''}</small></div><div class="dir"><span class="valor num">${brl(l.valor)}</span></div></div>`;
+    }).join('') + (ordenados.length > 10 ? `<button class="link" type="button" id="b-ver-todos">${E.verTodos ? 'Mostrar só os últimos 10' : `Ver todos os ${ordenados.length} lançamentos`}</button>` : '')
+      : '<p class="vazio">Sem lançamentos neste mês. Toque em Lançar para registrar um gasto.</p>';
 
     // ---------- mês a mês ----------
     const meses = [E.ref, ...mesesAntes(E.ref, 5)].reverse();
@@ -792,7 +849,7 @@
           ${cats.length ? `<p class="legenda-medidor"><span class="lg-gasto">Gasto</span>${atual ? '<span class="lg-prev">Previsto</span>' : ''}<span class="lg-teto">Teto</span></p>` : ''}</section>
         <div>
           <section class="secao"><h3>Como você pagou</h3>${htmlFormas}</section>
-          <section class="secao"><h3>Últimos lançamentos ${lanc.length > 10 ? `<small>10 de ${lanc.length}</small>` : ''}</h3>${htmlUlt}</section>
+          <section class="secao"><h3>Lançamentos <small>toque para editar</small></h3>${htmlUlt}</section>
         </div>
       </div>
       <section class="secao"><h3>Mês a mês</h3>
@@ -802,6 +859,7 @@
       </section>`;
 
     $$('[data-aba-ir]').forEach(b => b.onclick = () => irPara(b.dataset.abaIr));
+    const vt = $('#b-ver-todos'); if (vt) vt.onclick = () => { E.verTodos = !E.verTodos; renderConteudo(); };
     E.grafico = futuro ? null : anim => { const box = $('#ritmo-svg'); if (box) { box.innerHTML = graficoRitmo(lanc, diasMes, dia, teto, box.clientWidth); if (anim && movOk()) box.firstElementChild.classList.add('desenhar'); } };
   }
 
@@ -871,7 +929,7 @@
       // lançado depois de informar o saldo no mesmo dia: ainda não está no saldo informado
       const anc = E.dados.ajustes?.saldo;
       const depois = !!(anc && anc.em && l.criado && l.data === anc.data && l.criado > anc.em);
-      if (dentro(l.data)) slot(l.data).sai.push({ desc: l.descricao || l.categoria, valor: l.valor, cat: l.categoria, depois });
+      if (dentro(l.data)) slot(l.data).sai.push({ desc: l.descricao || l.categoria, valor: l.valor, cat: l.categoria, depois, id: l.id });
     });
 
     // 3. contas fixas que ainda vão vencer (as vencidas já foram lançadas pela rotina diária)
@@ -928,6 +986,106 @@
     return { inicial, dias, ancora };
   }
 
+  /* ---------------------- folha de lançamento ---------------------- */
+  // Abre de baixo para cima: valor primeiro (teclado numérico), depois categoria e forma em um toque.
+  function categoriasPorUso() {
+    const base = E.dados.categorias || [];
+    const limite = ymd(new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - 60));
+    const uso = {};
+    (E.dados.lancamentos || []).forEach(l => { if (l.data >= limite && l.origem !== 'Conta fixa') uso[l.categoria] = (uso[l.categoria] || 0) + 1; });
+    return [...base].sort((a, b) => (uso[b] || 0) - (uso[a] || 0));
+  }
+
+  function avisoRapido(txt) {
+    const a = $('#aviso'); if (!a) return;
+    a.textContent = txt; a.classList.remove('visivel'); void a.offsetWidth; a.classList.add('visivel');
+    clearTimeout(avisoRapido.t); avisoRapido.t = setTimeout(() => a.classList.remove('visivel'), 2800);
+  }
+
+  function fecharFolha() {
+    const d = $('#folha'); if (!d || !d.open) return;
+    if (!movOk()) { d.close(); return; }
+    d.classList.remove('aberta');
+    d.addEventListener('transitionend', () => d.close(), { once: true });
+    setTimeout(() => { if (d.open) d.close(); }, 400);
+  }
+
+  function abrirFolha(id) {
+    const d = $('#folha'); if (!d || !E.dados) return;
+    const atual = id ? (E.dados.lancamentos || []).find(l => l.id === id) : null;
+    if (id && !atual) return avisoRapido('Esse gasto não está mais na lista. Toque em Atualizar.');
+    const cats = categoriasPorUso(), formas = E.dados.formas || ['Pix', 'Crédito', 'Débito', 'Dinheiro'];
+    const cat = atual?.categoria || '', forma = atual?.forma || ls.get(K.forma) || 'Pix';
+    const valorIni = atual ? atual.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '';
+    const chip = (nome, grupo, sel) => `<button type="button" class="chip" role="radio" aria-checked="${sel}" data-grupo="${grupo}" data-v="${esc(nome)}">${esc(nome)}</button>`;
+
+    d.innerHTML = `
+      <form class="folha-corpo" id="g-form" method="dialog" novalidate>
+        <div class="folha-topo">
+          <span class="alca" aria-hidden="true"></span>
+          <h2 id="folha-titulo">${atual ? 'Editar gasto' : 'Novo gasto'}</h2>
+          <button class="ico" type="button" id="g-fechar" aria-label="Fechar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+        </div>
+        <label class="valor-grande"><span class="rs">R$</span><input id="g-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" maxlength="12" value="${valorIni}" aria-label="Valor do gasto"></label>
+        <fieldset class="chips" role="radiogroup" aria-label="Categoria"><legend>Categoria</legend>${cats.map(c => chip(c, 'cat', c === cat)).join('')}</fieldset>
+        <fieldset class="chips" role="radiogroup" aria-label="Forma de pagamento"><legend>Pagou com</legend>${formas.map(f => chip(f, 'forma', f === forma)).join('')}</fieldset>
+        <div class="folha-linha">
+          <label class="campo"><span>Descrição (opcional)</span><input id="g-desc" type="text" autocomplete="off" maxlength="200" placeholder="Ex.: Almoço com o time" value="${esc(atual?.descricao || '')}"></label>
+          <label class="campo"><span>Data</span><input id="g-data" type="date" value="${atual?.data || ymd(hoje)}" max="${ymd(new Date(hoje.getFullYear() + 1, 11, 31))}"></label>
+        </div>
+        ${atual?.origem === 'Conta fixa' ? '<p class="apoio-secao">Este gasto veio de uma conta fixa. Mudar aqui altera só este mês.</p>' : ''}
+        <div class="msg" id="g-msg" role="alert"></div>
+        <button class="btn largo" id="g-salvar" type="submit">${atual ? 'Salvar alterações' : 'Salvar gasto'}</button>
+        ${atual ? '<button class="link perigo largo" type="button" id="g-apagar">Apagar gasto</button>' : ''}
+      </form>`;
+
+    d.showModal();
+    requestAnimationFrame(() => d.classList.add('aberta'));
+    setTimeout(() => $('#g-valor').focus(), movOk() ? 260 : 0);
+
+    // chips: um toque escolhe; setas navegam como num grupo de rádio
+    $$('.chip', d).forEach(b => b.onclick = () => {
+      $$(`.chip[data-grupo="${b.dataset.grupo}"]`, d).forEach(x => x.setAttribute('aria-checked', String(x === b)));
+      if (b.dataset.grupo === 'cat') $('#g-msg').textContent = '';
+    });
+    $('#g-fechar').onclick = fecharFolha;
+    d.oncancel = ev => { ev.preventDefault(); fecharFolha(); };
+    d.onclick = ev => { if (ev.target === d) fecharFolha(); }; // toque fora da folha
+    $('#g-valor').addEventListener('input', ev => { ev.target.value = ev.target.value.replace(/[^\d.,]/g, ''); });
+
+    $('#g-form').onsubmit = async ev => {
+      ev.preventDefault();
+      const msg = $('#g-msg'), btn = $('#g-salvar');
+      const valor = lerValor($('#g-valor').value);
+      const categoria = $('.chip[data-grupo="cat"][aria-checked="true"]', d)?.dataset.v;
+      const fp = $('.chip[data-grupo="forma"][aria-checked="true"]', d)?.dataset.v;
+      const data = $('#g-data').value;
+      msg.className = 'msg erro';
+      if (!(valor > 0)) { msg.textContent = 'Digite o valor do gasto.'; $('#g-valor').focus(); return; }
+      if (!categoria) { msg.textContent = 'Escolha a categoria.'; return; }
+      if (!fp) { msg.textContent = 'Escolha como pagou.'; return; }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) { msg.textContent = 'Escolha a data.'; return; }
+      btn.disabled = true; btn.textContent = 'Salvando…';
+      const corpo = { valor, categoria, forma: fp, data, descricao: $('#g-desc').value.trim() };
+      try {
+        if (await gravar(atual ? 'editarLancamento' : 'lancar', atual ? Object.assign({ id: atual.id }, corpo) : corpo)) {
+          ls.set(K.forma, fp);
+          fecharFolha();
+          renderConteudo();
+          avisoRapido(atual ? 'Gasto atualizado.' : `Gasto salvo: ${brl(valor)} em ${categoria}.`);
+        }
+      } catch (e) { msg.textContent = e.message; btn.disabled = false; btn.textContent = atual ? 'Salvar alterações' : 'Salvar gasto'; }
+    };
+
+    const apagar = $('#g-apagar');
+    if (apagar) apagar.onclick = async () => {
+      if (apagar.dataset.confirmar !== '1') { apagar.dataset.confirmar = '1'; apagar.textContent = 'Toque de novo para apagar'; return; }
+      apagar.disabled = true; apagar.textContent = 'Apagando…';
+      try { if (await gravar('removerLancamento', { id: atual.id })) { fecharFolha(); renderConteudo(); avisoRapido('Gasto apagado.'); } }
+      catch (e) { $('#g-msg').textContent = e.message; apagar.disabled = false; apagar.textContent = 'Apagar gasto'; }
+    };
+  }
+
   /* -------------------------- aba FLUXO -------------------------- */
   function renderFluxo() {
     const mesTxt = MESES[E.ref.getMonth()];
@@ -950,7 +1108,7 @@
     const htmlDias = F.dias.map(x => {
       const vazio = !x.itens.ent.length && !x.itens.sai.length;
       const itens = [...x.itens.ent.map(i => ({ ...i, e: true })), ...x.itens.sai]
-        .map(i => `<li class="${i.e ? 'ent' : 'sai'}${i.prev ? ' prev' : ''}"><span>${esc(i.desc)}${i.prev ? ' <small>previsto</small>' : ''}</span><span class="valor num">${i.e ? '+' : '−'} ${brl(i.valor)}</span></li>`).join('');
+        .map(i => `<li class="${i.e ? 'ent' : 'sai'}${i.prev ? ' prev' : ''}${i.id ? ' editavel' : ''}"${i.id ? ` data-editar="${esc(i.id)}" role="button" tabindex="0"` : ''}><span>${esc(i.desc)}${i.prev ? ' <small>previsto</small>' : ''}</span><span class="valor num">${i.e ? '+' : '−'} ${brl(i.valor)}</span></li>`).join('');
       const resumo = `<span class="fd-dia">${pad(x.d.getDate())} <small>${x.hoje ? 'hoje' : SEMANA[x.d.getDay()]}</small></span>
         <span class="fd-ent valor num">${x.ent ? '+ ' + brl(x.ent) : ''}</span>
         <span class="fd-sai valor num">${x.sai ? '− ' + brl(x.sai) : ''}</span>
@@ -1108,6 +1266,13 @@
             ${aj.cartao ? '<button class="link perigo" type="button" id="cc-remover">Não uso cartão de crédito</button>' : ''}
             <div class="msg" id="cc-msg" role="status"></div>
           </section>
+
+          <section class="secao">
+            <h3>Acesso neste aparelho</h3>
+            <p class="apoio-secao">${ls.get(K.aparelho) ? 'Este aparelho está lembrado: você entra sem digitar a senha por até 60 dias desde o último uso. Tocar em Sair também faz o aparelho ser esquecido.' : 'Este aparelho não está lembrado. Para não precisar da senha toda vez, saia e entre de novo marcando "Lembrar de mim".'}</p>
+            ${ls.get(K.aparelho) ? '<button class="btn secundario" type="button" id="b-esquecer">Esquecer este aparelho</button>' : ''}
+            ${D.formulario ? `<h4>Plano B</h4><p class="apoio-secao">Se o app não abrir, lance pelo formulário do Google. O gasto entra do mesmo jeito.</p><a class="link" href="${esc(D.formulario)}" target="_blank" rel="noopener noreferrer">Abrir formulário</a>` : ''}
+          </section>
         </div>
       </div>`;
 
@@ -1161,6 +1326,15 @@
       return { acao: 'salvarAjustes', corpo: { cartao: { fecha, vence } } };
     }, 'Cartão salvo.'); };
 
+    const esq = $('#b-esquecer');
+    if (esq) esq.onclick = async () => {
+      esq.disabled = true;
+      const aparelho = ls.get(K.aparelho);
+      ls.set(K.aparelho, null);
+      api('sair', { aparelho }).catch(() => { });
+      renderConteudo();
+      avisoRapido('Este aparelho foi esquecido. Na próxima vez, entre com a senha.');
+    };
     const ccRem = $('#cc-remover');
     if (ccRem) ccRem.onclick = async () => { ccRem.disabled = true; try { if (await gravar('salvarAjustes', { cartao: null })) renderConteudo(); } catch (e) { ccRem.textContent = e.message; } };
 
@@ -1227,11 +1401,22 @@
 
   async function iniciar() {
     if (Sessao.atual()) { Ociosidade.iniciar(); telaPainel(); carregarDados(); return; }
+    if (ls.get(K.aparelho) && CFG.api) {
+      raiz().innerHTML = '<p class="carregando">Entrando…</p>';
+      try {
+        await retomar();
+        Ociosidade.iniciar(); E.aba = 'painel'; telaPainel(); carregarDados();
+        return;
+      } catch (e) {
+        if (e.codigo !== 'aparelho_invalido') { telaAcesso('entrar', { tipo: 'erro', texto: e.message }); return; }
+        E.msgInicio = { tipo: 'info', texto: e.message };
+      }
+    }
     try { E.status = await api('status'); } catch (e) {
       telaAcesso('entrar', CFG.api ? { tipo: 'erro', texto: e.message } : null);
       return;
     }
-    telaAcesso(E.status.temConta ? 'entrar' : 'criar');
+    telaAcesso(E.status.temConta ? 'entrar' : 'criar', E.msgInicio || null);
   }
 
   iniciar();

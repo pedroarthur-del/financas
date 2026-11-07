@@ -23,7 +23,15 @@ Painel pessoal de gastos: Google Forms → Planilha → Apps Script (API com log
 - Contas fixas entram sozinhas em Lançamentos no dia delas (rotina diária instalada por `autorizar`). Não lance essas contas pelo formulário.
 - Compras no crédito saem do saldo no vencimento da fatura. Dias futuros usam uma estimativa do gasto do dia a dia.
 
+## Lançar no app
+
+- Botão **Lançar** fixo na tela: valor, categoria (as mais usadas primeiro), forma de pagamento, descrição e data.
+- Toque num lançamento (no Painel ou no Fluxo) para editar ou apagar.
+- O formulário do Google continua funcionando como plano B (link em Cadastros).
+
 ## Segurança
+
+- **Lembrar de mim:** o aparelho recebe um token próprio (guardado no servidor só como hash) que vale 60 dias desde o último uso e é trocado a cada uso. Sair, redefinir a senha ou rodar `encerrarTodasSessoes()` faz o aparelho ser esquecido.
 
 - A senha não sai do aparelho: o navegador deriva uma chave com PBKDF2-SHA256 (600 mil iterações); o servidor guarda só um hash dessa chave com sal aleatório.
 - A primeira conta criada é a dona dos dados. Depois, só cria conta quem tiver código de `gerarConvite()` (uso único, 48 h).

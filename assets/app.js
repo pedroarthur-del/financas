@@ -1373,13 +1373,15 @@
 
           <section class="secao" id="sec-recorrentes">
             <h3>Entradas recorrentes</h3>
-            <p class="apoio-secao">Variáveis que se repetem, cada um com o seu dia (ex.: um projeto no dia 25 e outro no dia 30). O fluxo usa o valor previsto até você lançar quanto entrou de verdade${recs.length ? '' : '. Sem recorrentes, o fluxo usa a média dos últimos 3 meses'}.</p>
+            <p class="apoio-secao">Variáveis que se repetem, cada um com o seu dia (ex.: um projeto no dia 25 e outro no dia 30). Coloque até quando cada um vai entrar: depois disso ele sai do fluxo e da previsão. O fluxo usa o valor previsto até você lançar quanto entrou de verdade${recs.length ? '' : '. Sem recorrentes, o fluxo usa a média dos últimos 3 meses'}.</p>
             <form class="form-conta" id="f-rec" novalidate>
               <label class="campo c-nome"><span>Nome</span><input id="rc-nome" type="text" autocomplete="off" placeholder="Ex.: Variável projeto A" maxlength="40" value="${esc(edR?.nome || '')}"></label>
               <label class="campo"><span>Valor previsto</span><input id="rc-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 1.200,00" maxlength="14" value="${edR ? edR.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : ''}"></label>
               <label class="campo"><span>Dia que cai</span><input id="rc-dia" type="number" inputmode="numeric" min="1" max="31" placeholder="30" value="${edR?.dia || ''}"></label>
               <label class="campo"><span>Começa em</span><input id="rc-inicio" type="month" value="${edR?.inicio || chaveMes(hoje)}"></label>
-              <label class="campo"><span>Termina em <small>(opcional)</small></span><input id="rc-fim" type="month" value="${edR?.fim || ''}"></label>
+              <label class="campo"><span>Recebe até</span><input id="rc-fim" type="month" value="${edR?.fim || ''}"></label>
+              <label class="campo"><span>ou por quantos meses</span><input id="rc-meses" type="number" inputmode="numeric" min="1" max="120" placeholder="Ex.: 10"></label>
+              <p class="dica c-dica" id="rc-dica">${dicaPeriodo(edR?.inicio || chaveMes(hoje), edR?.fim || '').replace('sem data para acabar', 'sem data para acabar. Se o projeto tem prazo, preencha até quando recebe')}</p>
               <button class="btn" type="submit">${edR ? 'Salvar alterações' : 'Adicionar recorrente'}</button>
               ${edR ? '<button class="btn secundario" type="button" id="rc-cancelar">Cancelar edição</button>' : ''}
             </form>
@@ -1387,8 +1389,14 @@
             ${recs.length ? recs.map(x => {
               const recebido = R.variaveis.filter(r => r.recorrente === x.id).reduce((s2, r) => s2 + r.valor, 0);
               const noMes = recorrentesNoMes(chave).some(y => y.id === x.id);
+              const mHoje = chaveMes(hoje), acabou = x.fim && x.fim < mHoje, futura = x.inicio && x.inicio > mHoje;
+              const restam = x.fim && !acabou ? mesesEntre(futura ? x.inicio : mHoje, x.fim) + 1 : 0;
+              const periodo = x.fim
+                ? `${mesCurtoTxt(x.inicio)} a ${mesCurtoTxt(x.fim)}${acabou ? ', já terminou' : `, ${restam === 1 ? 'último mês' : `faltam ${restam} meses`}`}`
+                : `desde ${mesCurtoTxt(x.inicio)}, sem data para acabar`;
               const status = !noMes ? 'fora do período neste mês' : recebido ? `recebido ${brl(recebido)} em ${mesTxt}` : `a receber em ${mesTxt}`;
-              return `<div class="linha${noMes ? '' : ' inativa'}"><div class="esq"><div>${esc(x.nome)}</div><small>Dia ${x.dia}, ${x.fim ? `${mesCurtoTxt(x.inicio)} a ${mesCurtoTxt(x.fim)}` : `desde ${mesCurtoTxt(x.inicio)}`}. ${status}.</small></div><div class="dir"><span class="valor num">${brl(x.valor)}</span> <button class="link" type="button" data-editar-rec="${esc(x.id)}">Editar</button> ${btnRemover(x.id, 'removerRecorrente')}</div></div>`;
+              const totalRestante = x.fim && !acabou ? restam * x.valor : 0;
+              return `<div class="linha${noMes ? '' : ' inativa'}"><div class="esq"><div>${esc(x.nome)}</div><small>Dia ${x.dia}, ${periodo}. ${status[0].toUpperCase() + status.slice(1)}.${totalRestante ? ` Ainda devem entrar ${brl(totalRestante)}.` : ''}</small></div><div class="dir"><span class="valor num">${brl(x.valor)}</span> <button class="link" type="button" data-editar-rec="${esc(x.id)}">Editar</button> ${btnRemover(x.id, 'removerRecorrente')}</div></div>`;
             }).join('') : '<p class="vazio">Nenhuma entrada recorrente cadastrada.</p>'}
           </section>
         </div>
@@ -1497,6 +1505,13 @@
       if (E.editRec) corpo.id = E.editRec;
       return { acao: 'salvarRecorrente', corpo };
     }, edR ? 'Recorrente atualizada.' : 'Recorrente adicionada.'); };
+    const dicaRec = () => { $('#rc-dica').textContent = dicaPeriodo($('#rc-inicio').value, $('#rc-fim').value); };
+    $('#rc-meses').addEventListener('input', () => {
+      const n = Number($('#rc-meses').value), ini = $('#rc-inicio').value;
+      if (n >= 1 && /^\d{4}-\d{2}$/.test(ini)) { const [a2, m2] = ini.split('-').map(Number); $('#rc-fim').value = chaveMes(new Date(a2, m2 - 1 + n - 1, 1)); }
+      dicaRec();
+    });
+    ['#rc-inicio', '#rc-fim'].forEach(id => $(id).addEventListener('input', () => { if (id === '#rc-fim') $('#rc-meses').value = ''; dicaRec(); }));
     const rcCanc = $('#rc-cancelar'); if (rcCanc) rcCanc.onclick = () => { E.editRec = null; renderConteudo(); };
     $$('[data-editar-rec]').forEach(b => b.onclick = () => { E.editRec = b.dataset.editarRec; renderConteudo(); $('#sec-recorrentes').scrollIntoView({ behavior: movOk() ? 'smooth' : 'auto', block: 'start' }); $('#rc-nome').focus({ preventScroll: true }); });
 

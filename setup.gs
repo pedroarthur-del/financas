@@ -29,7 +29,7 @@ const CONFIG = {
   categorias: [
     'Alimentação', 'Mercado', 'Combustível', 'Transporte', 'Moradia',
     'Contas fixas', 'Saúde', 'Educação', 'Lazer', 'Compras pessoais',
-    'Assinaturas', 'Outros'
+    'Assinaturas', 'Outros', 'Investimentos'
   ],
   formasPagamento: ['Pix', 'Crédito', 'Débito', 'Dinheiro'],
   tiposEntrada: ['Variável', 'Venda', 'Reembolso', 'Presente', 'Rendimento', 'Outros'],
@@ -47,7 +47,7 @@ const SEG = {
   aparelhoDias: 60       // "lembrar de mim": dias sem precisar da senha (renova a cada uso)
 };
 
-const VERSAO = '2.7.0';
+const VERSAO = '3.0.0';
 
 const ABA = { respostas: 'Respostas', lanc: 'Lançamentos', tetos: 'Tetos', resumo: 'Resumo', links: 'Links', receitas: 'Receitas', contas: 'Contas fixas' };
 
@@ -93,6 +93,8 @@ const ROTAS = {
   removerLancamento: c => { const s = Sessao.validar(c.token); Lancamentos.remover(c); return Dados.painel(s); },
   salvarCartao: c => { const s = Sessao.validar(c.token); Ajustes.salvarCartao(c); return Dados.painel(s); },
   removerCartao: c => { const s = Sessao.validar(c.token); Ajustes.removerCartao(c); return Dados.painel(s); },
+  salvarOrcamento: c => { const s = Sessao.validar(c.token); Orcamento.salvar(c); return Dados.painel(s); },
+  removerOrcamento: c => { const s = Sessao.validar(c.token); Orcamento.remover(c); return Dados.painel(s); },
   salvarAjustes: c => { const s = Sessao.validar(c.token); Ajustes.salvar(c); return Dados.painel(s); }
 };
 
@@ -188,6 +190,11 @@ const V = {
     const s = String(v || '');
     if (!CONFIG.categorias.includes(s)) throw new ApiErro('categoria_invalida', 'Escolha uma categoria.');
     return s;
+  },
+  parcelas(v) {
+    const n = v === undefined || v === null || v === '' ? 1 : Number(v);
+    if (!Number.isInteger(n) || n < 1 || n > 48) throw new ApiErro('parcelas_invalidas', 'As parcelas vão de 1 a 48.');
+    return n;
   },
   texto(v, max) {
     return String(v || '').replace(/[<>]/g, '').trim().slice(0, max);
@@ -563,8 +570,8 @@ const Aparelho = {
 const Lancamentos = {
   aba() {
     const a = Dados.planilha().getSheetByName(ABA.lanc);
-    if (a.getRange(1, 10).getValue() !== 'Pontual') {
-      a.getRange(1, 7, 1, 4).setValues([['Lançado em', 'ID', 'Cartão', 'Pontual']]).setFontWeight('bold').setBackground('#E8EAF6');
+    if (a.getRange(1, 11).getValue() !== 'Parcelas') {
+      a.getRange(1, 7, 1, 5).setValues([['Lançado em', 'ID', 'Cartão', 'Pontual', 'Parcelas']]).setFontWeight('bold').setBackground('#E8EAF6');
       a.getRange('H:I').setNumberFormat('@');
     }
     return a;
@@ -572,7 +579,7 @@ const Lancamentos = {
   validar(c) {
     const data = V.data(c.data), valor = V.valor(c.valor), categoria = V.categoria(c.categoria), forma = V.forma(c.forma);
     const [y, m, d] = data.split('-').map(Number);
-    return { data: new Date(y, m - 1, d, 12), valor, categoria, forma, descricao: V.texto(c.descricao, 200), cartao: Ajustes.cartaoValido(forma, c.cartao), pontual: c.pontual === true ? 'Sim' : '' };
+    return { data: new Date(y, m - 1, d, 12), valor, categoria, forma, descricao: V.texto(c.descricao, 200), cartao: Ajustes.cartaoValido(forma, c.cartao), pontual: c.pontual === true ? 'Sim' : '', parcelas: forma === 'Crédito' ? V.parcelas(c.parcelas) : 1 };
   },
   linhaDe(a, id) {
     if (!/^[a-f0-9]{12}$/.test(String(id || ''))) throw new ApiErro('id_invalido', 'Gasto não encontrado.');
@@ -582,7 +589,7 @@ const Lancamentos = {
   },
   criar(c) {
     const l = this.validar(c);
-    comTrava_(() => this.aba().appendRow([l.data, l.valor, l.categoria, l.forma, l.descricao, 'App', new Date(), aleatorio_().slice(0, 12), l.cartao, l.pontual]));
+    comTrava_(() => this.aba().appendRow([l.data, l.valor, l.categoria, l.forma, l.descricao, 'App', new Date(), aleatorio_().slice(0, 12), l.cartao, l.pontual, l.parcelas]));
   },
   editar(c) {
     const l = this.validar(c);
@@ -590,6 +597,7 @@ const Lancamentos = {
       const a = this.aba(), linha = this.linhaDe(a, c.id);
       a.getRange(linha, 1, 1, 5).setValues([[l.data, l.valor, l.categoria, l.forma, l.descricao]]);
       a.getRange(linha, 9, 1, 2).setNumberFormat('@').setValues([[l.cartao, l.pontual]]);
+      a.getRange(linha, 11).setValue(l.parcelas);
     });
   },
   remover(c) {
@@ -722,6 +730,7 @@ const Ajustes = {
     }
     delete a.cartao;
     if (!Array.isArray(a.recorrentes)) a.recorrentes = [];
+    if (!a.preferencias) a.preferencias = { renda: 'antes', fatura: 'depois', contas: 'mesmo' };
     return a;
   },
   /** Crédito precisa de um cartão cadastrado (se houver cartões); outras formas não levam cartão. */
@@ -790,10 +799,91 @@ const Ajustes = {
     if (c.saldo !== undefined) {
       a.saldo = c.saldo === null ? null : { valor: V.saldo(c.saldo.valor), data: V.data(c.saldo.data), em: new Date().toISOString() };
     }
+    if (c.preferencias !== undefined) { // quando renda/fatura cai em fim de semana ou feriado
+      const ok = ['antes', 'depois', 'mesmo'];
+      const p = c.preferencias || {};
+      a.preferencias = {
+        renda: ok.includes(p.renda) ? p.renda : 'antes',
+        fatura: ok.includes(p.fatura) ? p.fatura : 'depois',
+        contas: ok.includes(p.contas) ? p.contas : 'mesmo'
+      };
+    }
     if (c.diaADia !== undefined) { // gasto do dia a dia: null = automático; valor = fixo por dia
       a.diaADia = c.diaADia === null ? null : { valor: V.valor(c.diaADia.valor) };
     }
     Store.set('AJUSTES', a);
+  }
+};
+
+/* =====================================================================
+   ORÇAMENTO  (versões: cada uma vale a partir de um mês até a próxima)
+   Cada categoria tem um limite em R$ ou em % da renda (fixo ou total).
+   A categoria Investimentos funciona como meta de quanto guardar.
+   ===================================================================== */
+
+const Orcamento = {
+  ler() {
+    const o = Store.get('ORCAMENTO');
+    if (o && Array.isArray(o.versoes)) return o;
+    // primeira vez: parte dos tetos da aba Tetos da planilha
+    const cats = {};
+    try {
+      Dados.planilha().getSheetByName(ABA.tetos).getDataRange().getValues().slice(1).forEach(l => {
+        const c = String(l[0]), v = Number(l[1]) || 0;
+        if (CONFIG.categorias.includes(c) && v > 0) cats[c] = { tipo: 'valor', valor: v };
+      });
+    } catch (_) { }
+    const mes = Utilities.formatDate(new Date(), CONFIG.fuso, 'yyyy-MM');
+    return { versoes: Object.keys(cats).length ? [{ desde: mes, cats }] : [] };
+  },
+  validarCats(cats) {
+    const out = {};
+    Object.keys(cats || {}).forEach(c => {
+      if (!CONFIG.categorias.includes(c)) return;
+      const x = cats[c] || {};
+      const tipo = ['valor', 'pctFixo', 'pctRenda'].includes(x.tipo) ? x.tipo : 'valor';
+      const n = Number(String(x.valor || '0').replace(',', '.'));
+      if (!isFinite(n) || n < 0 || (tipo !== 'valor' && n > 100) || n > 10000000) throw new ApiErro('valor_invalido', `Valor inválido em ${c}.`);
+      if (n > 0) out[c] = { tipo, valor: Math.round(n * 100) / 100 };
+    });
+    return out;
+  },
+  salvar(c) {
+    const desde = V.mes(c.desde), cats = this.validarCats(c.cats);
+    comTrava_(() => {
+      const o = this.ler();
+      o.versoes = o.versoes.filter(v => v.desde !== desde);
+      o.versoes.push({ desde, cats, salvo: new Date().toISOString() });
+      o.versoes.sort((a, b) => a.desde.localeCompare(b.desde));
+      Store.set('ORCAMENTO', o);
+      this.espelharNaPlanilha(o);
+    });
+  },
+  remover(c) {
+    const desde = V.mes(c.desde);
+    comTrava_(() => {
+      const o = this.ler(), antes = o.versoes.length;
+      o.versoes = o.versoes.filter(v => v.desde !== desde);
+      if (o.versoes.length === antes) throw new ApiErro('nao_encontrado', 'Esse orçamento já foi removido.');
+      Store.set('ORCAMENTO', o);
+      this.espelharNaPlanilha(o);
+    });
+  },
+  /** Mantém a aba Tetos da planilha com os valores em R$ do mês atual (para quem olha a planilha). */
+  espelharNaPlanilha(o) {
+    try {
+      const mes = Utilities.formatDate(new Date(), CONFIG.fuso, 'yyyy-MM');
+      const v = o.versoes.filter(x => x.desde <= mes).pop();
+      const fixo = Receitas.listar().filter(r => r.tipo === 'fixo' && r.mes <= mes).sort((a, b) => b.mes.localeCompare(a.mes))[0];
+      const base = fixo ? fixo.valor : 0;
+      const aba = Dados.planilha().getSheetByName(ABA.tetos);
+      const linhas = CONFIG.categorias.map(c => {
+        const x = v && v.cats[c];
+        const r = !x ? 0 : x.tipo === 'valor' ? x.valor : Math.round(base * x.valor) / 100;
+        return [c, r];
+      });
+      aba.getRange(2, 1, linhas.length, 2).setValues(linhas);
+    } catch (_) { }
   }
 };
 
@@ -811,7 +901,7 @@ const Dados = {
     const ss = this.planilha();
     const abaL = Lancamentos.aba();
     const valsL = abaL.getDataRange().getValues();
-    while (valsL[0].length < 10) valsL.forEach(l => l.push(''));
+    while (valsL[0].length < 11) valsL.forEach(l => l.push(''));
     comTrava_(() => Lancamentos.garantirIds(abaL, valsL));
     const lancamentos = valsL.slice(1)
       .filter(l => l[0] !== '' && l[1] !== '')
@@ -825,12 +915,13 @@ const Dados = {
         origem: String(l[5] || ''),
         cartao: String(l[8] || ''),
         pontual: String(l[9] || '').toLowerCase() === 'sim',
+        parcelas: Math.max(1, Math.min(48, parseInt(l[10], 10) || 1)),
         criado: l[6] instanceof Date ? l[6].toISOString() : ''
       }));
     const tetos = ss.getSheetByName(ABA.tetos).getDataRange().getValues().slice(1)
       .filter(l => l[0] && CONFIG.categorias.includes(String(l[0])))
       .map(l => ({ categoria: String(l[0]), teto: Number(l[1]) || 0 }));
-    return { atualizado: new Date().toISOString(), usuario: { nome: sessao.nome }, lancamentos, tetos, receitas: Receitas.listar(), contas: Contas.listar(), ajustes: Ajustes.ler(), categorias: CONFIG.categorias, formas: CONFIG.formasPagamento, tiposEntrada: CONFIG.tiposEntrada, formulario: this.linkFormulario() };
+    return { atualizado: new Date().toISOString(), usuario: { nome: sessao.nome }, lancamentos, tetos, receitas: Receitas.listar(), contas: Contas.listar(), ajustes: Ajustes.ler(), categorias: CONFIG.categorias, formas: CONFIG.formasPagamento, tiposEntrada: CONFIG.tiposEntrada, orcamento: Orcamento.ler(), formulario: this.linkFormulario() };
   },
   linkFormulario() {
     const p = Store.p();

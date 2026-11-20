@@ -23,6 +23,14 @@ Painel pessoal de gastos: Google Forms → Planilha → Apps Script (API com log
 - Contas fixas entram sozinhas em Lançamentos no dia delas (rotina diária instalada por `autorizar`). Não lance essas contas pelo formulário.
 - Compras no crédito saem do saldo no vencimento da fatura. Dias futuros usam uma estimativa do gasto do dia a dia.
 
+## Planejar (v3)
+
+- **Orçamento**: limite por categoria em R$, % do salário fixo ou % da renda; meta de guardar (Investimentos); versões que valem a partir de um mês (ex.: orçamento de 2027 a partir de janeiro); consumo do mês, grade do ano por categoria e renda planejada com aumento de salário programado.
+- **Simular**: compra à vista, no crédito, em 3/6/10/12x (com juros e desconto opcionais) ou juntando por 3/6 meses; roda o fluxo de 12 meses para cada formato e recomenda.
+- **Parcelas**: compras no crédito podem ser parceladas; cada parcela cai na fatura do mês.
+- **Dia útil**: salário e variáveis que caem em fim de semana ou feriado nacional são antecipados (configurável); faturas são adiadas.
+- **Foto do comprovante**: com uma chave da API da Anthropic cadastrada no aparelho, a foto da nota ou do Pix preenche o lançamento.
+
 ## Lançar no app
 
 - Botão **Lançar** fixo na tela: valor, categoria (as mais usadas primeiro), forma de pagamento, descrição e data.

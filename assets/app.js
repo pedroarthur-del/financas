@@ -85,6 +85,8 @@
     sair: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h11"/></svg>',
     ant: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>',
     prox: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>',
+    mic: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg>',
+    camera: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
     cadeado: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>'
   };
 
@@ -1235,6 +1237,7 @@
       try {
         if (await gravar(atual ? 'editarReceita' : 'adicionarVariavel', atual ? Object.assign({ id: atual.id }, corpo) : corpo)) {
           fecharFolha(); renderConteudo();
+          if (!atual) continuarFilaVoz();
           avisoRapido(atual ? 'Entrada atualizada.' : `Entrada salva: + ${brl(valor)}.`);
         }
       } catch (e) { msg.textContent = e.message; btn.disabled = false; btn.textContent = atual ? 'Salvar alterações' : 'Salvar entrada'; }
@@ -1318,6 +1321,7 @@
           if (idCartao) ls.set(K.cartao, idCartao);
           fecharFolha();
           renderConteudo();
+          if (!atual) continuarFilaVoz();
           avisoRapido(atual ? 'Gasto atualizado.' : parcelas > 1 ? `Compra salva: ${parcelas}x de ${brl(valor / parcelas)} em ${categoria}.` : `Gasto salvo: ${brl(valor)} em ${categoria}.`);
         }
       } catch (e) { msg.textContent = e.message; btn.disabled = false; btn.textContent = atual ? 'Salvar alterações' : 'Salvar gasto'; }
@@ -1352,49 +1356,52 @@
     });
   }
 
-  async function lerComprovante(arquivo) {
+  const DIAS_SEMANA = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
+
+  /** Chamada única à API: usada pela foto e pela fala. Devolve o JSON que a IA respondeu. */
+  async function chamarIA(conteudo, maxTokens, oque) {
     const chave = ls.get(K.ia);
-    if (!chave) throw new ErroApp('sem_chave', 'Para ler fotos, cadastre a chave da IA em Cadastros → Leitura de comprovantes.');
-    const data = await reduzirImagem(arquivo);
-    const cats = E.dados.categorias || [], tipos = E.dados.tiposEntrada || [];
-    const nomesCartoes = cartoes().map(c => c.nome);
-    const prompt = `Você lê comprovantes brasileiros (cupom fiscal, nota, comprovante de Pix, TED, maquininha, fatura) para um app de finanças pessoais.
-Hoje é ${ymd(hoje)}. Responda SOMENTE com um JSON, sem texto antes ou depois, neste formato:
-{"tipo":"saida|entrada","valor":0.00,"data":"AAAA-MM-DD","descricao":"texto curto, ex.: nome do estabelecimento","forma":"Pix|Crédito|Débito|Dinheiro|null","cartao":"nome do cartão da lista ou null","parcelas":1,"categoria":"uma da lista","tipoEntrada":"uma da lista ou null","confianca":"alta|media|baixa","observacao":"curta, só se algo estiver incerto"}
-Regras: valor é o total pago (com desconto), em reais. Se for um Pix recebido, tipo é "entrada". Se a data não aparecer, use hoje.
-Categorias de gasto possíveis: ${cats.join(', ')}.
-Tipos de entrada possíveis: ${tipos.join(', ')}.
-Cartões do usuário: ${nomesCartoes.length ? nomesCartoes.join(', ') : 'nenhum cadastrado'} (escolha pelo banco ou bandeira que aparecer; se não der para saber, null).`;
+    if (!chave) throw new ErroApp('sem_chave', 'Para usar a IA, cadastre a chave em Cadastros → Leitura de comprovantes.');
     const ctrl = new AbortController(), limite = setTimeout(() => ctrl.abort(), 45000);
     let r;
     try {
       r = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST', signal: ctrl.signal, credentials: 'omit', referrerPolicy: 'no-referrer',
         headers: { 'content-type': 'application/json', 'x-api-key': chave, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-        body: JSON.stringify({ model: IA_MODELO, max_tokens: 600, messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } }, { type: 'text', text: prompt }] }] })
+        body: JSON.stringify({ model: IA_MODELO, max_tokens: maxTokens, messages: [{ role: 'user', content: conteudo }] })
       });
     } catch (e) {
-      throw new ErroApp('rede', e.name === 'AbortError' ? 'A leitura demorou demais. Tente de novo com uma foto mais nítida.' : 'Sem conexão com o serviço de leitura.');
+      throw new ErroApp('rede', e.name === 'AbortError' ? 'A IA demorou demais para responder. Tente de novo.' : 'Sem conexão com o serviço de IA.');
     } finally { clearTimeout(limite); }
     const j = await r.json().catch(() => ({}));
     if (!r.ok) {
       const m = j?.error?.message || '';
       if (r.status === 401) throw new ErroApp('chave', 'A chave da IA foi recusada. Confira em Cadastros → Leitura de comprovantes.');
-      if (r.status === 429) throw new ErroApp('limite', 'Muitas leituras seguidas. Espere um minuto e tente de novo.');
-      throw new ErroApp('ia', 'Não consegui ler o comprovante agora' + (m ? `: ${m}` : '.'));
+      if (r.status === 400 && /credit|balance/i.test(m)) throw new ErroApp('saldo', 'Os créditos da IA acabaram. Recarregue no painel da Anthropic (Billing).');
+      if (r.status === 429) throw new ErroApp('limite', 'Muitos pedidos seguidos. Espere um minuto e tente de novo.');
+      throw new ErroApp('ia', `Não consegui ${oque} agora` + (m ? `: ${m}` : '.'));
     }
     const texto = (j.content || []).map(c => c.text || '').join('');
-    const bloco = texto.match(/\{[\s\S]*\}/);
-    if (!bloco) throw new ErroApp('ia', 'Não encontrei os dados nesse comprovante. Tente uma foto mais de perto.');
-    let res; try { res = JSON.parse(bloco[0]); } catch (_) { throw new ErroApp('ia', 'A leitura veio incompleta. Tente de novo.'); }
-    const valor = Number(String(res.valor).replace(',', '.'));
-    if (!(valor > 0)) throw new ErroApp('ia', 'Não consegui identificar o valor. Confira a foto ou digite o valor.');
+    const bloco = texto.match(/[\[{][\s\S]*[\]}]/);
+    if (!bloco) throw new ErroApp('ia', `Não consegui ${oque}. Tente de novo.`);
+    try { return JSON.parse(bloco[0]); } catch (_) { throw new ErroApp('ia', 'A resposta da IA veio incompleta. Tente de novo.'); }
+  }
+
+  /** Confere tudo que a IA devolveu: só aceita categoria, forma e cartão que existem no app. */
+  function normalizarLeitura(res) {
+    const cats = E.dados.categorias || [], tipos = E.dados.tiposEntrada || [];
+    const valor = Math.round(Number(String(res.valor ?? '').replace(/[^\d.,-]/g, '').replace(',', '.')) * 100) / 100;
+    const limiteData = ymd(new Date(hoje.getFullYear() + 1, 11, 31));
+    const dataOk = /^\d{4}-\d{2}-\d{2}$/.test(res.data || '') && res.data >= '2000-01-01' && res.data <= limiteData;
+    const nomeCartao = String(res.cartao || '').toLowerCase().trim();
+    const cartao = nomeCartao ? (cartoes().find(c => c.nome.toLowerCase() === nomeCartao)
+      || cartoes().find(c => c.nome.toLowerCase().includes(nomeCartao.split(' ')[0]) || nomeCartao.includes(c.nome.toLowerCase().split(' ')[0]))) : null;
     return {
       tipo: res.tipo === 'entrada' ? 'entrada' : 'saida', valor,
-      data: /^\d{4}-\d{2}-\d{2}$/.test(res.data || '') ? res.data : ymd(hoje),
+      data: dataOk ? res.data : ymd(new Date()),
       descricao: String(res.descricao || '').slice(0, 80),
       forma: ['Pix', 'Crédito', 'Débito', 'Dinheiro'].includes(res.forma) ? res.forma : null,
-      cartao: cartoes().find(c => res.cartao && c.nome.toLowerCase().includes(String(res.cartao).toLowerCase().split(' ')[0]))?.id || null,
+      cartao: cartao?.id || null,
       parcelas: Math.max(1, Math.min(48, parseInt(res.parcelas, 10) || 1)),
       categoria: cats.includes(res.categoria) ? res.categoria : null,
       tipoEntrada: tipos.includes(res.tipoEntrada) ? res.tipoEntrada : null,
@@ -1402,8 +1409,55 @@ Cartões do usuário: ${nomesCartoes.length ? nomesCartoes.join(', ') : 'nenhum 
     };
   }
 
+  const contextoIA = () => {
+    const nomesCartoes = cartoes().map(c => c.nome);
+    return `Categorias de gasto possíveis: ${(E.dados.categorias || []).join(', ')}.
+Tipos de entrada possíveis: ${(E.dados.tiposEntrada || []).join(', ')}.
+Cartões do usuário: ${nomesCartoes.length ? nomesCartoes.join(', ') : 'nenhum cadastrado'}.`;
+  };
+
+  async function lerComprovante(arquivo) {
+    if (!ls.get(K.ia)) throw new ErroApp('sem_chave', 'Para ler fotos, cadastre a chave da IA em Cadastros → Leitura de comprovantes.');
+    const data = await reduzirImagem(arquivo);
+    const prompt = `Você lê comprovantes brasileiros (cupom fiscal, nota, comprovante de Pix, TED, maquininha, fatura) para um app de finanças pessoais.
+Hoje é ${ymd(hoje)}. Responda SOMENTE com um JSON, sem texto antes ou depois, neste formato:
+{"tipo":"saida|entrada","valor":0.00,"data":"AAAA-MM-DD","descricao":"texto curto, ex.: nome do estabelecimento","forma":"Pix|Crédito|Débito|Dinheiro|null","cartao":"nome do cartão da lista ou null","parcelas":1,"categoria":"uma da lista","tipoEntrada":"uma da lista ou null","confianca":"alta|media|baixa","observacao":"curta, só se algo estiver incerto"}
+Regras: valor é o total pago (com desconto), em reais. Se for um Pix recebido, tipo é "entrada". Se a data não aparecer, use hoje.
+${contextoIA()} Escolha o cartão pelo banco ou bandeira que aparecer; se não der para saber, null.`;
+    const res = await chamarIA([{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } }, { type: 'text', text: prompt }], 600, 'ler o comprovante');
+    const x = normalizarLeitura(Array.isArray(res) ? res[0] || {} : res);
+    if (!(x.valor > 0)) throw new ErroApp('ia', 'Não consegui identificar o valor. Confira a foto ou digite o valor.');
+    return x;
+  }
+
+  /** Fala ou texto livre → um ou mais lançamentos. Sem data = hoje. */
+  async function interpretarFala(texto) {
+    const frase = String(texto || '').trim().slice(0, 1200);
+    if (frase.length < 3) throw new ErroApp('fala', 'Diga ou escreva o gasto. Ex.: "gastei 42 e 90 no almoço no Coco Bambu".');
+    const agora = new Date(), ontem = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate() - 1);
+    const prompt = `Você transforma o que a pessoa falou em lançamentos de um app brasileiro de finanças pessoais. O texto veio de um ditado por voz, então pode ter erros de transcrição.
+Hoje é ${DIAS_SEMANA[agora.getDay()]}, ${ymd(agora)}. Ontem foi ${ymd(ontem)}.
+Responda SOMENTE com um JSON, sem texto antes ou depois, neste formato:
+{"itens":[{"tipo":"saida|entrada","valor":0.00,"data":"AAAA-MM-DD","descricao":"curta: estabelecimento e/ou o que foi, ex.: Almoço no Coco Bambu","forma":"Pix|Crédito|Débito|Dinheiro|null","cartao":"nome do cartão da lista ou null","parcelas":1,"categoria":"uma da lista","tipoEntrada":"uma da lista ou null","confianca":"alta|media|baixa","observacao":"curta, só se algo estiver incerto"}]}
+Regras:
+- Cada gasto ou recebimento mencionado vira um item ("almoço 45 e uber 18" = 2 itens).
+- Valores em reais. "42 e 90", "42 reais e 90 centavos", "42,90" = 42.90. "mil e duzentos" = 1200. "cinquentinha" = 50. Se o valor for ambíguo, escolha o mais provável e confianca "baixa".
+- Data: se não falar data, use hoje. "ontem", "anteontem", "sexta passada", "dia 15" (deste mês; se ficar no futuro, mês passado) viram a data exata.
+- Forma: só preencha se a pessoa disser (Pix, crédito/cartão de crédito, débito, dinheiro/espécie). Se não disser, null. "No cartão" sem dizer débito = Crédito. "Em 3x"/"parcelado em 3" = Crédito com parcelas 3.
+- Cartão: só se ela citar o banco ou nome (ex.: "no Nubank"), escolhendo da lista de cartões.
+- Categoria: deduza pelo lugar ou pelo que foi comprado (restaurante, lanche, almoço → Alimentação; supermercado → Mercado; Uber, 99, ônibus → Transporte; gasolina, posto → Combustível; farmácia, consulta → Saúde; Netflix, Spotify → Assinaturas; aplicar, investir, guardar → Investimentos).
+- "Recebi", "entrou", "caiu", "me pagaram" = tipo entrada.
+${contextoIA()}
+Texto falado: """${frase.replace(/"""/g, '"')}"""`;
+    const res = await chamarIA([{ type: 'text', text: prompt }], 900, 'entender o que você falou');
+    const brutos = Array.isArray(res) ? res : Array.isArray(res.itens) ? res.itens : [res];
+    const itens = brutos.slice(0, 10).map(normalizarLeitura).filter(x => x.valor > 0);
+    if (!itens.length) throw new ErroApp('fala', 'Não encontrei nenhum valor no que você falou. Tente dizer o valor e onde gastou.');
+    return itens;
+  }
+
   /** Preenche a folha aberta com o que a IA leu; a pessoa revisa e salva. */
-  function aplicarLeitura(x) {
+  function aplicarLeitura(x, origem = 'foto') {
     const preencher = () => {
       const d = $('#folha');
       const tocar = sel => { const b = $(sel, d); if (b && b.getAttribute('aria-checked') !== 'true') b.click(); };
@@ -1418,31 +1472,189 @@ Cartões do usuário: ${nomesCartoes.length ? nomesCartoes.join(', ') : 'nenhum 
       } else if (x.tipoEntrada) tocar(`.chip[data-grupo="tipo"][data-v="${x.tipoEntrada}"]`);
       const m = $('#g-msg');
       m.className = 'msg info';
-      m.textContent = `Lido da foto${x.confianca === 'baixa' ? ' com pouca certeza' : ''}. Confira e toque em salvar.${x.observacao ? ' ' + x.observacao : ''}`;
+      m.textContent = `${origem === 'fala' ? 'Entendido do que você falou' : 'Lido da foto'}${x.confianca === 'baixa' ? ', com pouca certeza' : ''}. Confira e toque em salvar.${x.observacao ? ' ' + x.observacao : ''}`;
     };
     const modoAtual = $('#g-form')?.classList.contains('entrada') ? 'entrada' : 'saida';
     if (modoAtual !== x.tipo) { abrirFolha(null, x.tipo); setTimeout(preencher, 30); } else preencher();
   }
 
-  /** Botão de foto na folha: só aparece se a chave estiver cadastrada neste aparelho. */
-  const botaoFoto = () => `<div class="foto-ler">
+  /* ------------------------- lançar falando ------------------------- */
+  // O áudio não sai do aparelho para a IA: o próprio navegador (ou o microfone do teclado) vira texto,
+  // e só o texto vai para a IA. Nada é salvo sem a pessoa confirmar.
+  const Reconhecedor = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+  const ehStandalone = () => window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
+  const dataCurta = iso => { if (iso === ymd(new Date())) return 'hoje'; const [a, m, d2] = iso.split('-'); return `${d2}/${m}` + (+a !== new Date().getFullYear() ? `/${a}` : ''); };
+
+  const botaoFoto = () => `<div class="ia-acoes">
+      <button type="button" class="btn secundario" id="g-voz-btn" aria-expanded="false">${ICONE.mic}<span>Falar o gasto</span></button>
+      <button type="button" class="btn secundario" id="g-foto-btn">${ICONE.camera}<span>Ler foto</span></button>
       <input type="file" id="g-foto" accept="image/*" class="oculto-acessivel" tabindex="-1">
-      <button type="button" class="btn secundario largo" id="g-foto-btn">${ls.get(K.ia) ? 'Ler foto ou comprovante' : 'Ler foto ou comprovante (configurar)'}</button>
+    </div>
+    <div class="voz escondido" id="g-voz">
+      <label class="campo"><span>O que você gastou ou recebeu</span>
+        <textarea id="g-voz-txt" rows="2" maxlength="1200" placeholder="Ex.: gastei 42 e 90 no almoço no Coco Bambu, no crédito do Nubank"></textarea>
+      </label>
+      <div class="voz-linha">
+        ${Reconhecedor ? `<button type="button" class="btn secundario mic" id="g-voz-mic" aria-pressed="false">${ICONE.mic}<span>Gravar</span></button>` : ''}
+        <button type="button" class="btn" id="g-voz-ok">Entender</button>
+      </div>
+      <p class="dica" id="g-voz-dica">${Reconhecedor ? 'Toque em Gravar e fale. Sem data, entra como hoje.' : 'Toque no campo e use o microfone do teclado para ditar. Sem data, entra como hoje.'}</p>
     </div>`;
+
+  function irParaChaveIA() { fecharFolha(); irPara('cadastros'); setTimeout(() => $('#sec-ia')?.scrollIntoView({ block: 'start' }), 80); }
+
   function ligarBotaoFoto(d) {
     const btn = $('#g-foto-btn', d), inp = $('#g-foto', d); if (!btn) return;
-    btn.onclick = () => {
-      if (!ls.get(K.ia)) { fecharFolha(); irPara('cadastros'); setTimeout(() => $('#sec-ia')?.scrollIntoView({ block: 'start' }), 80); return; }
-      inp.click();
-    };
+    btn.onclick = () => { if (!ls.get(K.ia)) return irParaChaveIA(); inp.click(); };
     inp.onchange = async () => {
       const arq = inp.files && inp.files[0]; if (!arq) return;
       const m = $('#g-msg');
-      btn.disabled = true; btn.textContent = 'Lendo o comprovante…'; btn.classList.add('lendo');
+      btn.disabled = true; btn.lastChild.textContent = 'Lendo…'; btn.classList.add('lendo');
       try { aplicarLeitura(await lerComprovante(arq)); }
       catch (e) { m.className = 'msg erro'; m.textContent = e.message; }
-      finally { const b2 = $('#g-foto-btn'); if (b2) { b2.disabled = false; b2.textContent = 'Ler foto ou comprovante'; b2.classList.remove('lendo'); } inp.value = ''; }
+      finally { const b2 = $('#g-foto-btn'); if (b2) { b2.disabled = false; b2.lastChild.textContent = 'Ler foto'; b2.classList.remove('lendo'); } inp.value = ''; }
     };
+    ligarVoz(d);
+  }
+
+  function ligarVoz(d) {
+    const abrir = $('#g-voz-btn', d), painel = $('#g-voz', d); if (!abrir) return;
+    const txt = $('#g-voz-txt', d), ok = $('#g-voz-ok', d), mic = $('#g-voz-mic', d), dica = $('#g-voz-dica', d);
+    let rec = null, base = '';
+    const parar = () => { try { rec && rec.stop(); } catch (_) {} };
+    const marcarGravando = on => {
+      if (!mic) return;
+      mic.setAttribute('aria-pressed', String(on)); mic.classList.toggle('gravando', on);
+      mic.lastChild.textContent = on ? 'Parar' : 'Gravar';
+      if (on) dica.textContent = 'Ouvindo… fale o valor, onde foi e como pagou.';
+    };
+    const gravar_ = () => {
+      if (rec) return parar();
+      rec = new Reconhecedor();
+      rec.lang = 'pt-BR'; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 1;
+      base = txt.value.trim() ? txt.value.trim() + ' ' : '';
+      rec.onresult = ev => {
+        let fala = '';
+        for (let i = 0; i < ev.results.length; i++) fala += ev.results[i][0].transcript;
+        txt.value = base + fala;
+      };
+      rec.onerror = ev => {
+        const m = { 'not-allowed': 'O microfone foi bloqueado. Libere nas permissões do navegador ou use o microfone do teclado.',
+          'service-not-allowed': 'O app instalado na tela inicial não grava áudio direto. Toque no campo e use o microfone do teclado.',
+          'no-speech': 'Não ouvi nada. Toque em Gravar e fale de novo.', 'network': 'Sem internet para transcrever. Use o microfone do teclado.' }[ev.error];
+        dica.textContent = m || 'Não consegui gravar. Use o microfone do teclado.';
+        if (ev.error === 'service-not-allowed' || ev.error === 'not-allowed') { mic.remove(); txt.focus(); }
+      };
+      rec.onend = () => {
+        rec = null; marcarGravando(false);
+        if (txt.value.trim().length > 3 && dica.textContent.startsWith('Ouvindo')) { dica.textContent = 'Confira o texto e toque em Entender.'; ok.focus(); }
+      };
+      try { rec.start(); marcarGravando(true); } catch (_) { rec = null; dica.textContent = 'Não consegui gravar. Use o microfone do teclado.'; }
+    };
+    abrir.onclick = () => {
+      if (!ls.get(K.ia)) return irParaChaveIA();
+      const abrindo = painel.classList.contains('escondido');
+      painel.classList.toggle('escondido', !abrindo); abrir.setAttribute('aria-expanded', String(abrindo));
+      if (!abrindo) return parar();
+      if (mic && !ehStandalone()) gravar_(); else txt.focus();
+    };
+    if (mic) mic.onclick = gravar_;
+    txt.addEventListener('keydown', ev => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); ok.click(); } });
+    ok.onclick = async () => {
+      parar();
+      const m = $('#g-msg');
+      ok.disabled = true; ok.textContent = 'Entendendo…';
+      try {
+        const itens = await interpretarFala(txt.value);
+        if (itens.length === 1) { aplicarLeitura(itens[0], 'fala'); const p2 = $('#g-voz'); if (p2) p2.classList.add('escondido'); }
+        else revisarVarios(itens, txt.value);
+      } catch (e) { m.className = 'msg erro'; m.textContent = e.message; }
+      finally { const o2 = $('#g-voz-ok'); if (o2) { o2.disabled = false; o2.textContent = 'Entender'; } }
+    };
+  }
+
+  /** Mais de um lançamento numa fala: lista para conferir, ajustar um a um ou salvar todos. */
+  function revisarVarios(itens, frase) {
+    const d = $('#folha'); if (!d) return;
+    E.filaVoz = { itens: itens.slice(), frase };
+    const nomeCartao = id => cartoes().find(c => c.id === id)?.nome;
+    const faltando = x => x.tipo === 'saida' ? (!x.categoria ? 'categoria' : null) : (!x.descricao ? 'origem' : null);
+    const formaFinal = x => x.forma || ls.get(K.forma) || 'Pix';
+    const linha = (x, i) => {
+      const fp = formaFinal(x), falta = faltando(x);
+      const det = x.tipo === 'entrada'
+        ? [x.tipoEntrada || 'Variável', dataCurta(x.data)]
+        : [x.categoria || 'sem categoria', fp + (fp === 'Crédito' && (x.cartao || ls.get(K.cartao)) ? ' ' + (nomeCartao(x.cartao || ls.get(K.cartao)) || '') : '') + (x.parcelas > 1 ? ` ${x.parcelas}x` : ''), dataCurta(x.data)];
+      return `<li class="voz-item${falta ? ' falta' : ''}${x.confianca === 'baixa' ? ' incerto' : ''}">
+        <div class="voz-item-txt">
+          <strong class="${x.tipo === 'entrada' ? 'pos' : ''}">${x.tipo === 'entrada' ? '+ ' : ''}${brl(x.valor)}</strong>
+          <span>${esc(x.descricao || (x.tipo === 'entrada' ? 'Entrada' : 'Gasto'))}</span>
+          <small>${det.map(esc).join(' · ')}${falta ? ` · falta ${falta}` : ''}${x.confianca === 'baixa' ? ' · confira o valor' : ''}</small>
+        </div>
+        <div class="voz-item-acoes">
+          <button type="button" class="link" data-ajustar="${i}">Ajustar</button>
+          <button type="button" class="ico" data-tirar="${i}" aria-label="Tirar da lista"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+        </div>
+      </li>`;
+    };
+    const desenhar = () => {
+      const fila = E.filaVoz.itens;
+      if (!fila.length) { E.filaVoz = null; fecharFolha(); return; }
+      const total = fila.reduce((s2, x) => s2 + (x.tipo === 'saida' ? x.valor : 0), 0);
+      const algumFalta = fila.some(faltando);
+      d.innerHTML = `
+        <form class="folha-corpo" id="g-form" method="dialog" novalidate>
+          ${topoFolha(`${fila.length} lançamentos`)}
+          <p class="apoio-secao">Entendi isto do que você falou${total ? ` (${brl(total)} em gastos)` : ''}. Confira antes de salvar.</p>
+          <ul class="voz-lista">${fila.map(linha).join('')}</ul>
+          <div class="msg" id="g-msg" role="alert">${algumFalta ? 'Algum item está sem informação. Toque em Ajustar para completar.' : ''}</div>
+          <button class="btn largo" id="g-salvar" type="submit"${algumFalta ? ' disabled' : ''}>Salvar os ${fila.length}</button>
+          <input id="g-valor" type="hidden">
+        </form>`;
+      if (!d.open) { d.showModal(); requestAnimationFrame(() => d.classList.add('aberta')); }
+      d.dataset.aberta = '1';
+      $('#g-fechar').onclick = () => { E.filaVoz = null; fecharFolha(); };
+      d.oncancel = ev => { ev.preventDefault(); E.filaVoz = null; fecharFolha(); };
+      $$('[data-tirar]', d).forEach(b => b.onclick = () => { fila.splice(+b.dataset.tirar, 1); desenhar(); });
+      $$('[data-ajustar]', d).forEach(b => b.onclick = () => {
+        const [x] = fila.splice(+b.dataset.ajustar, 1);
+        abrirFolha(null, x.tipo); setTimeout(() => aplicarLeitura(x, 'fala'), 30);
+      });
+      $('#g-form').onsubmit = async ev => {
+        ev.preventDefault();
+        const btn = $('#g-salvar'), msg = $('#g-msg');
+        btn.disabled = true;
+        let salvos = 0;
+        try {
+          while (fila.length) {
+            const x = fila[0];
+            btn.textContent = `Salvando ${salvos + 1} de ${salvos + fila.length}…`;
+            if (x.tipo === 'entrada') {
+              if (!await gravar('adicionarVariavel', { valor: x.valor, data: x.data, categoria: x.tipoEntrada || 'Variável', recorrente: '', descricao: x.descricao })) return;
+            } else {
+              const fp = formaFinal(x);
+              const cartao = fp === 'Crédito' ? (x.cartao || ls.get(K.cartao) || cartoes()[0]?.id || '') : '';
+              if (!await gravar('lancar', { valor: x.valor, categoria: x.categoria, forma: fp, data: x.data, descricao: x.descricao, cartao, pontual: false, parcelas: fp === 'Crédito' ? x.parcelas : 1 })) return;
+            }
+            fila.shift(); salvos++;
+          }
+          E.filaVoz = null; fecharFolha(); renderConteudo();
+          avisoRapido(`${salvos} lançamentos salvos.`);
+        } catch (e) {
+          renderConteudo();
+          msg.className = 'msg erro';
+          msg.textContent = (salvos ? `${salvos} salvos. ` : '') + e.message;
+          btn.disabled = false; btn.textContent = `Salvar os ${fila.length}`;
+        }
+      };
+    };
+    desenhar();
+  }
+
+  /** Depois de salvar um item ajustado, volta para a lista dos que faltam. */
+  function continuarFilaVoz() {
+    if (E.filaVoz && E.filaVoz.itens.length) { setTimeout(() => revisarVarios(E.filaVoz.itens, E.filaVoz.frase), 420); return true; }
+    E.filaVoz = null; return false;
   }
 
   /* ------------------------- aba ORÇAMENTO ------------------------- */
@@ -2104,8 +2316,8 @@ Cartões do usuário: ${nomesCartoes.length ? nomesCartoes.join(', ') : 'nenhum 
           </section>
 
           <section class="secao" id="sec-ia">
-            <h3>Leitura de comprovantes</h3>
-            <p class="apoio-secao">Tire uma foto da notinha ou mande o print do comprovante do Pix: a IA lê o valor, a data, o local, a forma de pagamento e sugere a categoria. Você confere e salva. Usa a API da Anthropic, com uma chave sua (cada leitura custa centavos). A chave fica guardada só neste aparelho e a foto vai direto para a API, sem passar pela planilha.</p>
+            <h3>IA: falar o gasto e ler comprovantes</h3>
+            <p class="apoio-secao">Fale o gasto ("gastei 42 e 90 no almoço, no crédito do Nubank") ou tire foto da notinha ou do print do Pix: a IA entende o valor, a data, o local, a forma de pagamento e a categoria. Você confere e salva. Usa a API da Anthropic, com uma chave sua (frações de centavo por fala, centavos por foto). A chave fica guardada só neste aparelho; o texto e a foto vão direto para a API, sem passar pela planilha.</p>
             ${ls.get(K.ia) ? `<p class="apoio-secao">Chave cadastrada neste aparelho (termina em ${esc(String(ls.get(K.ia)).slice(-4))}).</p><button class="btn secundario" type="button" id="ia-remover">Remover chave deste aparelho</button>`
               : `<form class="form-linha" id="f-ia" novalidate>
                   <label class="campo"><span>Chave da API (console.anthropic.com)</span><input id="ia-chave" type="password" autocomplete="off" placeholder="sk-ant-…" maxlength="200"></label>
@@ -2224,7 +2436,7 @@ Cartões do usuário: ${nomesCartoes.length ? nomesCartoes.join(', ') : 'nenhum 
       ev.preventDefault();
       const k = $('#ia-chave').value.trim(), msg = $('#ia-msg');
       if (!/^sk-ant-[\w-]{20,}$/.test(k)) { msg.className = 'msg erro'; msg.textContent = 'Essa chave não parece uma chave da Anthropic (começa com sk-ant-).'; return; }
-      ls.set(K.ia, k); renderConteudo(); avisoRapido('Chave salva neste aparelho. O botão de foto já aparece ao lançar.');
+      ls.set(K.ia, k); renderConteudo(); avisoRapido('Chave salva neste aparelho. Já dá para falar o gasto ou ler foto ao lançar.');
     };
     const iaRem = $('#ia-remover'); if (iaRem) iaRem.onclick = () => { ls.set(K.ia, null); renderConteudo(); avisoRapido('Chave removida deste aparelho.'); };
     const esq = $('#b-esquecer');

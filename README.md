@@ -48,3 +48,12 @@ Painel pessoal de gastos: Google Forms → Planilha → Apps Script (API com log
 - Redefinição de senha por código de 6 números enviado por e-mail (15 min, 5 tentativas). A resposta é igual exista ou não a conta.
 - CSP restrita, sem referrer, tudo escapado antes de entrar na tela, dados e sessão só no `sessionStorage`.
 - O `GET` da API não devolve dados.
+
+## v3.1 — lançar falando
+
+No Lançar, toque em **Falar o gasto** e diga, por exemplo: "gastei 42 e 90 no almoço no Coco Bambu, no crédito do Nubank".
+- Sem data, entra como hoje; entende "ontem", "sexta passada", "dia 15".
+- Sem forma de pagamento, usa a última que você usou. "Em 3x" vira crédito parcelado.
+- Vários gastos numa fala só viram uma lista para conferir e salvar de uma vez.
+- Nada é salvo sem confirmação. O áudio vira texto no próprio aparelho; só o texto vai para a IA (mesma chave da leitura de comprovantes).
+- No app instalado na tela inicial do iPhone, use o microfone do teclado no campo de texto.

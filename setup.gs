@@ -47,7 +47,7 @@ const SEG = {
   aparelhoDias: 60       // "lembrar de mim": dias sem precisar da senha (renova a cada uso)
 };
 
-const VERSAO = '3.2.1';
+const VERSAO = '3.2.3';
 
 const ABA = { respostas: 'Respostas', lanc: 'Lançamentos', tetos: 'Tetos', resumo: 'Resumo', links: 'Links', receitas: 'Receitas', contas: 'Contas fixas', banco: 'Banco' };
 
@@ -1058,7 +1058,7 @@ const Banco = {
     const hoje = Utilities.formatDate(new Date(), CONFIG.fuso, 'yyyy-MM-dd');
     // reabre 10 dias antes da última busca: compras pendentes do cartão mudam de status
     let de = cfg.desde || this.inicioPadrao_();
-    if (estado.ultima && estado.desdeUsado === de) {
+    if (estado.ultima && estado.desdeUsado === de && !estado.erro) { // só encurta a janela depois de uma busca completa
       const u = new Date(estado.ultima); u.setDate(u.getDate() - 10);
       const uTxt = Utilities.formatDate(u, CONFIG.fuso, 'yyyy-MM-dd');
       if (uTxt > de) de = uTxt;
@@ -1071,13 +1071,15 @@ const Banco = {
         const contasItem = this.get_('/accounts?itemId=' + itemId).results || [];
         contasItem.forEach(ct => {
           contas.push({ id: ct.id, nome: ct.marketingName || ct.name || banco, banco, tipo: ct.type, saldo: Number(ct.balance) || 0, item: itemId, consentimento: item.consentExpiresAt || '' });
-          let pagina = 1, total = 1;
-          do {
-            const r = this.get_(`/transactions?accountId=${ct.id}&from=${de}&to=${hoje}&pageSize=500&page=${pagina}`);
-            total = r.totalPages || 1;
-            (r.results || []).forEach(t => novos.push({ t, ct, banco }));
-            pagina++;
-          } while (pagina <= total && pagina <= 20);
+          try {
+            // /v2/transactions: paginação por cursor (a lista por página foi desativada pela Pluggy)
+            let caminho = `/v2/transactions?accountId=${ct.id}&dateFrom=${de}&dateTo=${hoje}`, voltas = 0;
+            while (caminho && voltas++ < 40) {
+              const r = this.get_(caminho);
+              (r.results || []).forEach(t => novos.push({ t, ct, banco }));
+              caminho = r.next ? '/v2/transactions' + (String(r.next).charAt(0) === '?' ? r.next : '?' + r.next) : '';
+            }
+          } catch (e) { erros.push(`${banco} · ${ct.marketingName || ct.name || ct.type}: ${(e && e.message) || e}`); }
         });
         if (item.status && item.status !== 'UPDATED' && item.status !== 'UPDATING') erros.push(`${banco}: ${item.status}${item.executionStatus ? ' (' + item.executionStatus + ')' : ''}`);
       } catch (e) {

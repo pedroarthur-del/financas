@@ -1808,7 +1808,7 @@ ${alvo.map((f, i) => `${i + 1}. ${f.descricao} (${brl(f.valor)})`).join('\n')}` 
           <summary>${b.configurado ? 'Alterar conexão' : 'Configurar conexão'}</summary>
           <form id="f-banco" novalidate>
             <label class="campo"><span>Client ID</span><input id="bk-id" type="text" autocomplete="off" spellcheck="false" placeholder="${b.clientId ? esc(b.clientId) + ' (salvo)' : '9127929e-86be-45ef-…'}" maxlength="36"></label>
-            <label class="campo"><span>Client Secret</span><input id="bk-secret" type="password" autocomplete="off" placeholder="${b.temSecret ? 'Já salvo. Deixe vazio para manter' : 'Cole o secret da aplicação'}" maxlength="36"><small class="dica">Fica guardado só no servidor, nunca volta para o app.</small></label>
+            <label class="campo"><span>Client Secret</span><input id="bk-secret" type="password" autocomplete="off" placeholder="${b.temSecret ? 'Já salvo. Deixe vazio para manter' : 'Cole o secret da aplicação'}" maxlength="300"><small class="dica">Fica guardado só no servidor, nunca volta para o app.</small></label>
             <label class="campo"><span>Item IDs (um por linha)</span><textarea id="bk-itens" rows="3" spellcheck="false" placeholder="Copie em Aplicações → Demo → Connected Items">${esc((b.itens || []).join('\n'))}</textarea></label>
             <label class="campo"><span>Trazer movimentações desde</span><input id="bk-desde" type="date" value="${esc(b.desde || '')}"></label>
             <div class="msg" id="bk-msg" role="alert"></div>

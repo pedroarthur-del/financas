@@ -47,7 +47,7 @@ const SEG = {
   aparelhoDias: 60       // "lembrar de mim": dias sem precisar da senha (renova a cada uso)
 };
 
-const VERSAO = '3.2.0';
+const VERSAO = '3.2.1';
 
 const ABA = { respostas: 'Respostas', lanc: 'Lançamentos', tetos: 'Tetos', resumo: 'Resumo', links: 'Links', receitas: 'Receitas', contas: 'Contas fixas', banco: 'Banco' };
 
@@ -978,7 +978,7 @@ const Banco = {
     if (itens.length > 10) throw new ApiErro('banco_item', 'Cadastre no máximo 10 itens.');
     const desde = c.desde ? V.data(c.desde) : (atual.desde || this.inicioPadrao_());
     const secret = String(c.clientSecret || '').trim();
-    if (secret && !/^[0-9a-f-]{36}$/i.test(secret)) throw new ApiErro('banco_secret', 'O Client Secret tem o mesmo formato do Client ID (36 caracteres com traços).');
+    if (secret && !/^[\x21-\x7e]{16,300}$/.test(secret)) throw new ApiErro('banco_secret', 'Esse Client Secret parece incompleto. Copie de novo, sem espaços.');
     if (!secret && !this.temSecret()) throw new ApiErro('banco_secret', 'Cole o Client Secret da aplicação.');
     // testa as credenciais antes de salvar
     this.autenticar_(clientId, secret || Store.p().getProperty('PLUGGY_SECRET'));

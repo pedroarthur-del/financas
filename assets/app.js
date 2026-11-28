@@ -1771,14 +1771,19 @@ ${alvo.map((f, i) => `${i + 1}. ${f.descricao} (${brl(f.valor)})`).join('\n')}` 
       ev.preventDefault();
       const itens = marcados().map(f => { const x = sel[f.id]; return f.sentido === 'entrada' ? { id: f.id, tipoEntrada: x.tipoEntrada } : { id: f.id, categoria: x.categoria, forma: x.forma, cartao: x.cartao }; });
       if (!itens.length || semCat().length) return;
-      const btn = $('#g-salvar'); btn.disabled = true; btn.textContent = 'Confirmando…';
+      const btn = $('#g-salvar'); btn.disabled = true;
+      let feitos = 0;
       try {
-        if (await gravar('importarBanco', { itens })) {
-          itens.forEach(x => delete sel[x.id]);
-          renderConteudo(); avisoRapido(`${itens.length} ${itens.length === 1 ? 'movimentação confirmada' : 'movimentações confirmadas'}.`);
-          bancoInfo().fila.length ? abrirBanco() : fecharFolha();
+        // o servidor aceita até 100 por vez: manda em lotes
+        for (let i = 0; i < itens.length; i += 100) {
+          const lote = itens.slice(i, i + 100);
+          btn.textContent = itens.length > 100 ? `Confirmando ${Math.min(i + 100, itens.length)} de ${itens.length}…` : 'Confirmando…';
+          if (!await gravar('importarBanco', { itens: lote })) return;
+          lote.forEach(x => delete sel[x.id]); feitos += lote.length;
         }
-      } catch (e) { $('#g-msg').className = 'msg erro'; $('#g-msg').textContent = e.message; btn.disabled = false; atualizarBotoes(); }
+        renderConteudo(); avisoRapido(`${feitos} ${feitos === 1 ? 'movimentação confirmada' : 'movimentações confirmadas'}.`);
+        bancoInfo().fila.length ? abrirBanco() : fecharFolha();
+      } catch (e) { renderConteudo(); if (feitos) abrirBanco(); const m = $('#g-msg'); if (m) { m.className = 'msg erro'; m.textContent = (feitos ? `${feitos} confirmadas. ` : '') + e.message; } }
     };
     atualizarBotoes();
   }

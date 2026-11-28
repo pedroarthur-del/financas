@@ -1220,8 +1220,12 @@ function sincronizarBancoDiario() {
 
 /** Rode pelo editor: apaga a fila do banco que ainda não foi confirmada e busca tudo de novo. Não mexe no que já foi confirmado. */
 function refazerBanco() {
-  const a = Banco.aba(), vals = a.getDataRange().getValues();
-  for (let i = vals.length - 1; i >= 1; i--) if (String(vals[i][11]) !== 'importado' && String(vals[i][11]) !== 'ignorado') a.deleteRow(i + 1);
+  comTrava_(() => {
+    const a = Banco.aba(), vals = a.getDataRange().getValues();
+    const manter = vals.slice(1).filter(l => String(l[11]) === 'importado' || String(l[11]) === 'ignorado');
+    if (a.getLastRow() > 1) a.getRange(2, 1, a.getLastRow() - 1, Banco.CAB.length).clearContent();
+    if (manter.length) a.getRange(2, 1, manter.length, Banco.CAB.length).setValues(manter);
+  });
   Store.del('BANCO_SYNC');
   Logger.log('Fila limpa. Novas para conferir: ' + Banco.sincronizar());
   Logger.log(JSON.stringify((Store.get('BANCO_SYNC') || {}).erro || 'sem avisos'));

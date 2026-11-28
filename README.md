@@ -57,3 +57,18 @@ No Lançar, toque em **Falar o gasto** e diga, por exemplo: "gastei 42 e 90 no a
 - Vários gastos numa fala só viram uma lista para conferir e salvar de uma vez.
 - Nada é salvo sem confirmação. O áudio vira texto no próprio aparelho; só o texto vai para a IA (mesma chave da leitura de comprovantes).
 - No app instalado na tela inicial do iPhone, use o microfone do teclado no campo de texto.
+
+## v3.2 — bancos conectados (Meu Pluggy)
+
+Uso pessoal e gratuito: o Meu Pluggy permite até 5 conexões, sem uso comercial.
+
+1. Em meu.pluggy.ai, conecte seus bancos.
+2. Em dashboard.pluggy.ai: Personalização → Conectores → adicione **MeuPluggy**. Depois Aplicações → Demo → Connect Account → escolha **MeuPluggy** e entre com a conta do Meu Pluggy. Copie o id de cada item em *Connected Items*.
+3. No Apps Script: cole o setup.gs novo, rode `autorizar` (aceite a permissão de "conectar a serviço externo") e publique uma nova versão.
+4. No app: Cadastros → Bancos conectados → Client ID, Client Secret, Item IDs → Salvar e testar.
+
+O servidor busca as movimentações todo dia às 8h (o Meu Pluggy atualiza a cada 24 h) e guarda na aba **Banco**.
+Nada entra nos gastos sozinho: o Painel mostra a fila para conferir. Saem da fila automaticamente:
+o que você já tinha lançado (mesmo valor, até 3 dias de diferença), o salário fixo, o pagamento da fatura
+e as parcelas seguintes de compras parceladas (o app já projeta essas parcelas).
+O Client Secret fica nas Propriedades do script e nunca volta para o navegador.

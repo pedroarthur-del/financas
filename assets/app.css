@@ -734,3 +734,36 @@ details.fd[open] .fd-linha { padding-bottom: 4px; }
 .voz-item-txt span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .voz-item-txt small { color: var(--tinta-2); font-size: 13px; }
 .voz-item-acoes { display: flex; align-items: center; gap: 4px; flex: none; }
+
+/* ---------- banco conectado (v3.2) ---------- */
+.faixa-banco { display: flex; align-items: center; gap: 12px; justify-content: space-between; padding: 12px 14px; margin-bottom: 16px;
+  border: 1px solid var(--folga); border-radius: var(--raio); background: color-mix(in srgb, var(--folga) 8%, var(--papel)); }
+.faixa-banco div { display: grid; gap: 2px; min-width: 0; }
+.faixa-banco span { font-size: 14px; color: var(--tinta-2); }
+.faixa-banco .btn { flex: none; }
+.bk-barra { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 4px; }
+.bk-todos { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
+.bk-lista { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 8px; }
+.bk-item { display: flex; gap: 10px; padding: 10px 12px; border: 1px solid var(--linha); border-radius: var(--raio); background: var(--papel); }
+.bk-item.marcado { border-color: var(--tinta); }
+.bk-check { padding-top: 3px; }
+.bk-check input, .bk-todos input { width: 18px; height: 18px; accent-color: var(--tinta); }
+.bk-corpo { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.bk-topo { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.bk-topo strong { font-variant-numeric: tabular-nums; font-size: 17px; }
+.bk-topo strong.pos { color: var(--folga); }
+.bk-data { font-size: 13px; color: var(--tinta-2); font-variant-numeric: tabular-nums; }
+.bk-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bk-corpo small { color: var(--tinta-2); font-size: 13px; }
+.bk-campos { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.bk-campos select { min-width: 0; flex: 1 1 140px; height: 38px; padding: 0 10px; font: inherit; font-size: 15px; color: var(--tinta);
+  border: 1px solid var(--linha); border-radius: 10px; background: var(--papel); }
+.bk-campos select.falta { border-color: var(--atencao); }
+.bk-acoes { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 8px; margin-top: 8px; position: sticky; bottom: 0; background: var(--papel); padding: 8px 0 4px; }
+.bk-contas { list-style: none; padding: 0; margin: 0 0 8px; display: grid; gap: 6px; }
+.bk-contas li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--linha); }
+.bk-contas li span { display: grid; } .bk-contas small { color: var(--tinta-2); font-size: 13px; }
+.bk-contas strong { font-variant-numeric: tabular-nums; }
+.bk-acoes-cad { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0 10px; }
+.bk-config summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
+.bk-config textarea { width: 100%; padding: 10px 12px; font: inherit; font-size: 15px; color: var(--tinta); border: 1px solid var(--linha); border-radius: var(--raio); background: var(--papel); resize: vertical; }

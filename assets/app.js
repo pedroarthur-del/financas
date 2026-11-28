@@ -974,6 +974,7 @@
         ${!futuro ? `<section class="ritmo" id="ritmo" aria-label="Gasto acumulado no mês"><div id="ritmo-svg"></div>
           <div class="legenda"><span>Gasto acumulado</span>${teto ? '<span class="l-ideal">Ritmo para fechar no orçamento</span>' : ''}</div></section>` : ''}
       </div>
+      ${avisoBanco()}
       ${faixa()}
       <section class="secao"><h3>Quanto entra e quanto sai</h3>${balanco}</section>
       ${ajustes}
@@ -994,6 +995,7 @@
 
     $$('[data-aba-ir]').forEach(b => b.onclick = () => irPara(b.dataset.abaIr));
     const vt = $('#b-ver-todos'); if (vt) vt.onclick = () => { E.verTodos = !E.verTodos; renderConteudo(); };
+    const bb = $('#b-banco'); if (bb) bb.onclick = abrirBanco;
     E.grafico = futuro ? null : anim => { const box = $('#ritmo-svg'); if (box) { box.innerHTML = graficoRitmo(lanc, diasMes, dia, teto, box.clientWidth); if (anim && movOk()) box.firstElementChild.classList.add('desenhar'); } };
   }
 
@@ -1657,6 +1659,189 @@ Texto falado: """${frase.replace(/"""/g, '"')}"""`;
     E.filaVoz = null; return false;
   }
 
+  /* ------------------------- banco conectado (Pluggy) ------------------------- */
+  // O servidor busca as movimentações; aqui você confere, ajusta a categoria e confirma.
+  const bancoInfo = () => E.dados?.banco || { configurado: false, fila: [], contas: [], contagem: {} };
+
+  function avisoBanco() {
+    const b = bancoInfo(), n = (b.fila || []).length;
+    if (!b.configurado || !n) return '';
+    const total = b.fila.filter(f => f.sentido === 'saida').reduce((s2, f) => s2 + f.valor, 0);
+    return `<div class="faixa-banco" role="status">
+        <div><strong>${n} ${n === 1 ? 'movimentação' : 'movimentações'} do banco para conferir</strong>
+        <span>${total ? `${brl(total)} em saídas. ` : ''}Nada entra nos gastos sem você confirmar.</span></div>
+        <button class="btn" type="button" id="b-banco">Conferir</button>
+      </div>`;
+  }
+
+  /** Acha o seu cartão cadastrado que corresponde à conta de cartão do banco (pelo nome do banco). */
+  function cartaoDaConta(f) {
+    const cs = cartoes(); if (!cs.length) return '';
+    const alvo = `${f.banco} ${(bancoInfo().contas || []).find(c => c.id === f.conta)?.nome || ''}`.toLowerCase();
+    const achou = cs.find(c => c.nome.toLowerCase().split(/\s+/).some(p2 => p2.length > 2 && alvo.includes(p2)));
+    return (achou || cs.find(c => c.id === ls.get(K.cartao)) || cs[0]).id;
+  }
+
+  function abrirBanco() {
+    const d = $('#folha'); if (!d || !E.dados) return;
+    const b = bancoInfo(), fila = (b.fila || []).slice();
+    if (!fila.length) { fecharFolha(); return avisoRapido('Nada do banco para conferir.'); }
+    const cats = categoriasPorUso(), tipos = E.dados.tiposEntrada || [], cs = cartoes();
+    const nomeConta = f => (b.contas || []).find(c => c.id === f.conta)?.nome || f.banco;
+    const sel = E.bancoSel || (E.bancoSel = {});
+    fila.forEach(f => { if (!sel[f.id]) sel[f.id] = { marcado: f.sentido === 'entrada' || !!f.sugestao, categoria: f.sugestao || '', tipoEntrada: 'Variável', forma: f.forma || (f.tipoConta === 'CREDIT' ? 'Crédito' : 'Débito'), cartao: f.tipoConta === 'CREDIT' ? cartaoDaConta(f) : '' }; });
+    const linha = f => {
+      const x = sel[f.id], ent = f.sentido === 'entrada';
+      const [, mm, dd] = f.data.split('-');
+      return `<li class="bk-item${x.marcado ? ' marcado' : ''}" data-id="${esc(f.id)}">
+        <label class="bk-check"><input type="checkbox" data-bk-marca="${esc(f.id)}"${x.marcado ? ' checked' : ''} aria-label="Selecionar"></label>
+        <div class="bk-corpo">
+          <div class="bk-topo"><strong class="${ent ? 'pos' : ''}">${ent ? '+ ' : ''}${brl(f.valor)}</strong><span class="bk-data">${dd}/${mm}</span></div>
+          <span class="bk-desc">${esc(f.descricao || '(sem descrição)')}</span>
+          <small>${esc(f.banco)} · ${esc(nomeConta(f))}${f.parcela ? ` · parcela ${esc(f.parcela)}` : ''}${ent ? '' : ` · ${esc(x.forma)}`}</small>
+          <div class="bk-campos">
+            ${ent ? `<select data-bk-tipo="${esc(f.id)}" aria-label="Tipo de entrada">${tipos.map(t => `<option${t === x.tipoEntrada ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select>`
+              : `<select data-bk-cat="${esc(f.id)}" aria-label="Categoria"${x.categoria ? '' : ' class="falta"'}><option value="">Escolha a categoria</option>${cats.map(c => `<option${c === x.categoria ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select>`}
+            ${!ent && x.forma === 'Crédito' && cs.length > 1 ? `<select data-bk-cartao="${esc(f.id)}" aria-label="Cartão">${cs.map(c => `<option value="${esc(c.id)}"${c.id === x.cartao ? ' selected' : ''}>${esc(c.nome)}</option>`).join('')}</select>` : ''}
+          </div>
+        </div>
+      </li>`;
+    };
+    const marcados = () => fila.filter(f => sel[f.id].marcado);
+    const semCat = () => marcados().filter(f => f.sentido === 'saida' && !sel[f.id].categoria);
+    d.innerHTML = `
+      <form class="folha-corpo" id="g-form" method="dialog" novalidate>
+        ${topoFolha('Conferir o banco')}
+        <p class="apoio-secao">${fila.length} ${fila.length === 1 ? 'movimentação nova' : 'movimentações novas'}. O que você já tinha lançado, o salário, o pagamento da fatura e as parcelas seguintes já foram reconhecidos e não aparecem aqui.</p>
+        <div class="bk-barra">
+          <label class="bk-todos"><input type="checkbox" id="bk-todos"> <span>Todas</span></label>
+          ${ls.get(K.ia) && fila.some(f => f.sentido === 'saida' && !sel[f.id].categoria) ? '<button type="button" class="link" id="bk-ia">Sugerir categorias com IA</button>' : ''}
+        </div>
+        <ul class="bk-lista">${fila.map(linha).join('')}</ul>
+        <div class="msg" id="g-msg" role="alert"></div>
+        <div class="bk-acoes">
+          <button class="btn secundario" type="button" id="bk-ignorar">Ignorar</button>
+          <button class="btn" type="submit" id="g-salvar">Confirmar</button>
+        </div>
+        <input id="g-valor" type="hidden">
+      </form>`;
+    if (!d.open) { d.showModal(); requestAnimationFrame(() => d.classList.add('aberta')); }
+    d.dataset.aberta = '1';
+    $('#g-fechar').onclick = fecharFolha;
+    d.oncancel = ev => { ev.preventDefault(); fecharFolha(); };
+    d.onclick = ev => { if (ev.target === d) fecharFolha(); };
+    const atualizarBotoes = () => {
+      const n = marcados().length, falta = semCat().length;
+      $('#g-salvar').textContent = n ? `Confirmar ${n}` : 'Confirmar';
+      $('#g-salvar').disabled = !n || !!falta;
+      $('#bk-ignorar').textContent = n ? `Ignorar ${n}` : 'Ignorar';
+      $('#bk-ignorar').disabled = !n;
+      $('#bk-todos').checked = n === fila.length;
+      const m = $('#g-msg'); m.className = 'msg info'; m.textContent = falta ? `Escolha a categoria de ${falta === 1 ? '1 item marcado' : falta + ' itens marcados'} para confirmar.` : '';
+    };
+    $$('[data-bk-marca]', d).forEach(c => c.onchange = () => { sel[c.dataset.bkMarca].marcado = c.checked; c.closest('.bk-item').classList.toggle('marcado', c.checked); atualizarBotoes(); });
+    $$('[data-bk-cat]', d).forEach(c => c.onchange = () => {
+      const x = sel[c.dataset.bkCat]; x.categoria = c.value; c.classList.toggle('falta', !c.value);
+      if (c.value && !x.marcado) { x.marcado = true; const cb = $(`[data-bk-marca="${CSS.escape(c.dataset.bkCat)}"]`, d); cb.checked = true; cb.closest('.bk-item').classList.add('marcado'); }
+      atualizarBotoes();
+    });
+    $$('[data-bk-tipo]', d).forEach(c => c.onchange = () => { sel[c.dataset.bkTipo].tipoEntrada = c.value; });
+    $$('[data-bk-cartao]', d).forEach(c => c.onchange = () => { sel[c.dataset.bkCartao].cartao = c.value; });
+    $('#bk-todos').onchange = ev => { fila.forEach(f => { sel[f.id].marcado = ev.target.checked; }); abrirBanco(); };
+    const ia = $('#bk-ia');
+    if (ia) ia.onclick = async () => {
+      ia.disabled = true; ia.textContent = 'Sugerindo…';
+      try {
+        const alvo = fila.filter(f => f.sentido === 'saida' && !sel[f.id].categoria).slice(0, 60);
+        const res = await chamarIA([{ type: 'text', text: `Classifique cada movimentação bancária brasileira em UMA categoria desta lista: ${(E.dados.categorias || []).join(', ')}.
+Responda SOMENTE com JSON no formato {"c":["categoria", ...]} na mesma ordem. Se não der para saber, use "Outros".
+${alvo.map((f, i) => `${i + 1}. ${f.descricao} (${brl(f.valor)})`).join('\n')}` }], 1200, 'sugerir as categorias');
+        const lista = Array.isArray(res.c) ? res.c : [];
+        alvo.forEach((f, i) => { const c = lista[i]; if ((E.dados.categorias || []).includes(c)) { sel[f.id].categoria = c; sel[f.id].marcado = true; } });
+        abrirBanco(); avisoRapido('Categorias sugeridas. Confira antes de confirmar.');
+      } catch (e) { const m = $('#g-msg'); m.className = 'msg erro'; m.textContent = e.message; ia.disabled = false; ia.textContent = 'Sugerir categorias com IA'; }
+    };
+    $('#bk-ignorar').onclick = async () => {
+      const ids = marcados().map(f => f.id); if (!ids.length) return;
+      const btn = $('#bk-ignorar'); btn.disabled = true; btn.textContent = 'Ignorando…';
+      try { if (await gravar('ignorarBanco', { ids })) { ids.forEach(id => delete sel[id]); renderConteudo(); avisoRapido(`${ids.length} ${ids.length === 1 ? 'ignorada' : 'ignoradas'}.`); bancoInfo().fila.length ? abrirBanco() : fecharFolha(); } }
+      catch (e) { $('#g-msg').className = 'msg erro'; $('#g-msg').textContent = e.message; btn.disabled = false; atualizarBotoes(); }
+    };
+    $('#g-form').onsubmit = async ev => {
+      ev.preventDefault();
+      const itens = marcados().map(f => { const x = sel[f.id]; return f.sentido === 'entrada' ? { id: f.id, tipoEntrada: x.tipoEntrada } : { id: f.id, categoria: x.categoria, forma: x.forma, cartao: x.cartao }; });
+      if (!itens.length || semCat().length) return;
+      const btn = $('#g-salvar'); btn.disabled = true; btn.textContent = 'Confirmando…';
+      try {
+        if (await gravar('importarBanco', { itens })) {
+          itens.forEach(x => delete sel[x.id]);
+          renderConteudo(); avisoRapido(`${itens.length} ${itens.length === 1 ? 'movimentação confirmada' : 'movimentações confirmadas'}.`);
+          bancoInfo().fila.length ? abrirBanco() : fecharFolha();
+        }
+      } catch (e) { $('#g-msg').className = 'msg erro'; $('#g-msg').textContent = e.message; btn.disabled = false; atualizarBotoes(); }
+    };
+    atualizarBotoes();
+  }
+
+  /** Seção de Cadastros: credenciais da Pluggy, itens e sincronização. */
+  function secaoBanco() {
+    const b = bancoInfo(), quando = b.ultima ? new Date(b.ultima) : null;
+    const ct = b.contagem || {};
+    const resumo = ['importado', 'duplicado', 'salario', 'fatura', 'parcela', 'ignorado'].filter(k => ct[k]).map(k => `${ct[k]} ${{ importado: 'confirmadas', duplicado: 'já lançadas', salario: 'salário', fatura: 'pagamento de fatura', parcela: 'parcelas seguintes', ignorado: 'ignoradas' }[k]}`).join(' · ');
+    return `<section class="secao" id="sec-banco">
+        <h3>Bancos conectados <small>Meu Pluggy</small></h3>
+        ${b.configurado ? `
+          <ul class="bk-contas">${(b.contas || []).map(c => `<li><span>${esc(c.banco)} · ${esc(c.nome)}<small>${c.tipo === 'CREDIT' ? 'Cartão: fatura atual' : 'Saldo'}</small></span><strong>${brl(c.saldo)}</strong></li>`).join('') || '<li><span>Ainda não sincronizou.</span></li>'}</ul>
+          <p class="apoio-secao">${quando ? `Última busca: ${quando.toLocaleDateString('pt-BR')} às ${quando.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}. ` : ''}Busca sozinha todo dia às 8h. ${(b.fila || []).length ? `<strong>${b.fila.length} para conferir.</strong>` : ''}</p>
+          ${resumo ? `<p class="apoio-secao">${esc(resumo)}</p>` : ''}
+          ${b.erro ? `<p class="msg erro">${esc(b.erro)}</p>` : ''}
+          <div class="bk-acoes-cad">
+            <button class="btn" type="button" id="bk-sync">Buscar agora</button>
+            ${(b.fila || []).length ? '<button class="btn secundario" type="button" id="bk-abrir">Conferir</button>' : ''}
+          </div>` : `<p class="apoio-secao">Conecte seus bancos no Meu Pluggy e cole aqui as credenciais da sua aplicação em dashboard.pluggy.ai. As movimentações chegam numa fila para você conferir; nada entra nos gastos sozinho.</p>`}
+        <details class="bk-config"${b.configurado ? '' : ' open'}>
+          <summary>${b.configurado ? 'Alterar conexão' : 'Configurar conexão'}</summary>
+          <form id="f-banco" novalidate>
+            <label class="campo"><span>Client ID</span><input id="bk-id" type="text" autocomplete="off" spellcheck="false" placeholder="${b.clientId ? esc(b.clientId) + ' (salvo)' : '9127929e-86be-45ef-…'}" maxlength="36"></label>
+            <label class="campo"><span>Client Secret</span><input id="bk-secret" type="password" autocomplete="off" placeholder="${b.temSecret ? 'Já salvo. Deixe vazio para manter' : 'Cole o secret da aplicação'}" maxlength="36"><small class="dica">Fica guardado só no servidor, nunca volta para o app.</small></label>
+            <label class="campo"><span>Item IDs (um por linha)</span><textarea id="bk-itens" rows="3" spellcheck="false" placeholder="Copie em Aplicações → Demo → Connected Items">${esc((b.itens || []).join('\n'))}</textarea></label>
+            <label class="campo"><span>Trazer movimentações desde</span><input id="bk-desde" type="date" value="${esc(b.desde || '')}"></label>
+            <div class="msg" id="bk-msg" role="alert"></div>
+            <button class="btn" type="submit">Salvar e testar</button>
+          </form>
+        </details>
+      </section>`;
+  }
+
+  function ligarSecaoBanco() {
+    const f = $('#f-banco'); if (!f) return;
+    f.onsubmit = async ev => {
+      ev.preventDefault();
+      const msg = $('#bk-msg'), btn = f.querySelector('button[type="submit"]');
+      const clientId = $('#bk-id').value.trim(), clientSecret = $('#bk-secret').value.trim();
+      const itens = $('#bk-itens').value.split(/[\s,;]+/).map(x => x.trim()).filter(Boolean), desde = $('#bk-desde').value;
+      msg.className = 'msg erro';
+      if (!clientId && !bancoInfo().clientId) { msg.textContent = 'Cole o Client ID.'; return $('#bk-id').focus(); }
+      if (!itens.length) { msg.textContent = 'Cole pelo menos um Item ID.'; return $('#bk-itens').focus(); }
+      btn.disabled = true; btn.textContent = 'Testando com a Pluggy…';
+      try {
+        if (await gravar('salvarBanco', { clientId, clientSecret, itens, desde })) {
+          btn.textContent = 'Buscando movimentações…';
+          try { await gravar('sincronizarBanco', {}); } catch (e2) { renderConteudo(); const m2 = $('#bk-msg'); if (m2) { m2.className = 'msg erro'; m2.textContent = 'Conexão salva, mas a busca falhou: ' + e2.message; } return; }
+          renderConteudo(); avisoRapido('Banco conectado.');
+          if (bancoInfo().fila.length) abrirBanco();
+        }
+      } catch (e) { msg.textContent = e.message; btn.disabled = false; btn.textContent = 'Salvar e testar'; }
+    };
+    const sync = $('#bk-sync');
+    if (sync) sync.onclick = async () => {
+      sync.disabled = true; sync.textContent = 'Buscando…';
+      try { if (await gravar('sincronizarBanco', {})) { renderConteudo(); const n = bancoInfo().fila.length; avisoRapido(n ? `${n} para conferir.` : 'Tudo em dia com o banco.'); } }
+      catch (e) { sync.disabled = false; sync.textContent = 'Buscar agora'; avisoRapido(e.message); }
+    };
+    const ab = $('#bk-abrir'); if (ab) ab.onclick = abrirBanco;
+  }
+
   /* ------------------------- aba ORÇAMENTO ------------------------- */
   // Orçamento = limite por categoria (R$ ou % da renda) com versões que valem a partir de um mês.
   // A tela responde três perguntas: quanto já consumi do mês, quanto já consumi do ano e o que planejar.
@@ -2315,6 +2500,7 @@ Texto falado: """${frase.replace(/"""/g, '"')}"""`;
             <div class="msg" id="du-msg" role="status"></div>
           </section>
 
+          ${secaoBanco()}
           <section class="secao" id="sec-ia">
             <h3>IA: falar o gasto e ler comprovantes</h3>
             <p class="apoio-secao">Fale o gasto ("gastei 42 e 90 no almoço, no crédito do Nubank") ou tire foto da notinha ou do print do Pix: a IA entende o valor, a data, o local, a forma de pagamento e a categoria. Você confere e salva. Usa a API da Anthropic, com uma chave sua (frações de centavo por fala, centavos por foto). A chave fica guardada só neste aparelho; o texto e a foto vão direto para a API, sem passar pela planilha.</p>
@@ -2431,6 +2617,7 @@ Texto falado: """${frase.replace(/"""/g, '"')}"""`;
     if (ddAuto) ddAuto.onclick = async () => { ddAuto.disabled = true; try { if (await gravar('salvarAjustes', { diaADia: null })) { renderConteudo(); avisoRapido('Voltou para a estimativa automática.'); } } catch (e) { ddAuto.textContent = e.message; } };
 
     $('#f-diautil').onsubmit = ev => { ev.preventDefault(); enviarForm(ev.target, '#du-msg', () => ({ acao: 'salvarAjustes', corpo: { preferencias: { renda: $('#du-renda').value, fatura: $('#du-fatura').value, contas: prefs().contas } } }), 'Salvo. O Fluxo já usa as novas datas.'); };
+    ligarSecaoBanco();
     const fIa = $('#f-ia');
     if (fIa) fIa.onsubmit = ev => {
       ev.preventDefault();

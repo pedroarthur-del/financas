@@ -47,9 +47,9 @@ const SEG = {
   aparelhoDias: 60       // "lembrar de mim": dias sem precisar da senha (renova a cada uso)
 };
 
-const VERSAO = '3.0.0';
+const VERSAO = '3.2.0';
 
-const ABA = { respostas: 'Respostas', lanc: 'Lançamentos', tetos: 'Tetos', resumo: 'Resumo', links: 'Links', receitas: 'Receitas', contas: 'Contas fixas' };
+const ABA = { respostas: 'Respostas', lanc: 'Lançamentos', tetos: 'Tetos', resumo: 'Resumo', links: 'Links', receitas: 'Receitas', contas: 'Contas fixas', banco: 'Banco' };
 
 const TITULO = {
   valor: 'Valor (R$)',
@@ -95,7 +95,11 @@ const ROTAS = {
   removerCartao: c => { const s = Sessao.validar(c.token); Ajustes.removerCartao(c); return Dados.painel(s); },
   salvarOrcamento: c => { const s = Sessao.validar(c.token); Orcamento.salvar(c); return Dados.painel(s); },
   removerOrcamento: c => { const s = Sessao.validar(c.token); Orcamento.remover(c); return Dados.painel(s); },
-  salvarAjustes: c => { const s = Sessao.validar(c.token); Ajustes.salvar(c); return Dados.painel(s); }
+  salvarAjustes: c => { const s = Sessao.validar(c.token); Ajustes.salvar(c); return Dados.painel(s); },
+  salvarBanco: c => { const s = Sessao.validar(c.token); Banco.configurar(c); return Dados.painel(s); },
+  sincronizarBanco: c => { const s = Sessao.validar(c.token); Banco.sincronizar(); return Dados.painel(s); },
+  importarBanco: c => { const s = Sessao.validar(c.token); Banco.importar(c, s); return Dados.painel(s); },
+  ignorarBanco: c => { const s = Sessao.validar(c.token); Banco.ignorar(c); return Dados.painel(s); }
 };
 
 function doPost(e) {
@@ -921,7 +925,7 @@ const Dados = {
     const tetos = ss.getSheetByName(ABA.tetos).getDataRange().getValues().slice(1)
       .filter(l => l[0] && CONFIG.categorias.includes(String(l[0])))
       .map(l => ({ categoria: String(l[0]), teto: Number(l[1]) || 0 }));
-    return { atualizado: new Date().toISOString(), usuario: { nome: sessao.nome }, lancamentos, tetos, receitas: Receitas.listar(), contas: Contas.listar(), ajustes: Ajustes.ler(), categorias: CONFIG.categorias, formas: CONFIG.formasPagamento, tiposEntrada: CONFIG.tiposEntrada, orcamento: Orcamento.ler(), formulario: this.linkFormulario() };
+    return { atualizado: new Date().toISOString(), usuario: { nome: sessao.nome }, lancamentos, tetos, receitas: Receitas.listar(), contas: Contas.listar(), ajustes: Ajustes.ler(), categorias: CONFIG.categorias, formas: CONFIG.formasPagamento, tiposEntrada: CONFIG.tiposEntrada, orcamento: Orcamento.ler(), formulario: this.linkFormulario(), banco: Banco.resumo() };
   },
   linkFormulario() {
     const p = Store.p();
@@ -932,6 +936,294 @@ const Dados = {
     return url || '';
   }
 };
+
+/* =====================================================================
+   BANCO (Pluggy / Meu Pluggy)  — aba Banco
+   O servidor busca as movimentações dos bancos conectados no Meu Pluggy e guarda
+   na aba Banco. Nada entra nos gastos sozinho: o app mostra uma fila para conferir.
+   O que já foi lançado à mão, as parcelas futuras e o pagamento da fatura são
+   reconhecidos e saem da fila. O Client Secret fica só nas Propriedades do script.
+   ===================================================================== */
+
+const Banco = {
+  API: 'https://api.pluggy.ai',
+  CAB: ['ID Pluggy', 'Data', 'Valor', 'Sentido', 'Descrição', 'Categoria do banco', 'Categoria sugerida', 'Conta', 'Tipo de conta', 'Banco', 'Parcela', 'Status', 'Lançamento', 'Atualizado em', 'Forma sugerida'],
+  STATUS_FILA: 'novo',
+
+  cfg() { return Store.get('PLUGGY') || { clientId: '', itens: [], desde: '' }; },
+  temSecret() { return !!Store.p().getProperty('PLUGGY_SECRET'); },
+
+  aba() {
+    const ss = Dados.planilha();
+    let a = ss.getSheetByName(ABA.banco);
+    if (!a) {
+      a = ss.insertSheet(ABA.banco);
+      a.getRange(1, 1, 1, this.CAB.length).setValues([this.CAB]).setFontWeight('bold').setBackground('#E8EAF6');
+      a.setFrozenRows(1);
+      a.getRange('A:A').setNumberFormat('@');
+      a.getRange('K:M').setNumberFormat('@');
+      a.getRange('C2:C').setNumberFormat('"R$" #,##0.00');
+      a.setColumnWidths(1, this.CAB.length, 130);
+    }
+    return a;
+  },
+
+  configurar(c) {
+    const atual = this.cfg();
+    const clientId = String(c.clientId || atual.clientId || '').trim();
+    if (!/^[0-9a-f-]{36}$/i.test(clientId)) throw new ApiErro('banco_id', 'O Client ID tem o formato 9127929e-86be-45ef-…. Copie em dashboard.pluggy.ai → Aplicações.');
+    const itens = (Array.isArray(c.itens) ? c.itens : String(c.itens || '').split(/[\s,;]+/))
+      .map(x => String(x).trim()).filter(Boolean);
+    if (itens.some(x => !/^[0-9a-f-]{36}$/i.test(x))) throw new ApiErro('banco_item', 'Algum Item ID está errado. Cada um tem o formato xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.');
+    if (itens.length > 10) throw new ApiErro('banco_item', 'Cadastre no máximo 10 itens.');
+    const desde = c.desde ? V.data(c.desde) : (atual.desde || this.inicioPadrao_());
+    const secret = String(c.clientSecret || '').trim();
+    if (secret && !/^[0-9a-f-]{36}$/i.test(secret)) throw new ApiErro('banco_secret', 'O Client Secret tem o mesmo formato do Client ID (36 caracteres com traços).');
+    if (!secret && !this.temSecret()) throw new ApiErro('banco_secret', 'Cole o Client Secret da aplicação.');
+    // testa as credenciais antes de salvar
+    this.autenticar_(clientId, secret || Store.p().getProperty('PLUGGY_SECRET'));
+    if (secret) Store.p().setProperty('PLUGGY_SECRET', secret);
+    Store.set('PLUGGY', { clientId, itens, desde });
+    Store.del('PLUGGY_KEY');
+    this.instalarRotina_();
+  },
+
+  inicioPadrao_() {
+    const h = new Date(); return Utilities.formatDate(new Date(h.getFullYear(), h.getMonth() - 1, 1, 12), CONFIG.fuso, 'yyyy-MM-dd');
+  },
+
+  instalarRotina_() {
+    if (ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'sincronizarBancoDiario')) return;
+    ScriptApp.newTrigger('sincronizarBancoDiario').timeBased().everyDays(1).atHour(8).inTimezone(CONFIG.fuso).create();
+  },
+
+  autenticar_(clientId, secret) {
+    const r = UrlFetchApp.fetch(this.API + '/auth', { method: 'post', contentType: 'application/json', payload: JSON.stringify({ clientId, clientSecret: secret }), muteHttpExceptions: true });
+    if (r.getResponseCode() === 401 || r.getResponseCode() === 403) throw new ApiErro('banco_auth', 'A Pluggy recusou o Client ID ou o Client Secret. Confira em dashboard.pluggy.ai → Aplicações.');
+    if (r.getResponseCode() >= 300) throw new ApiErro('banco_auth', 'A Pluggy não respondeu agora (código ' + r.getResponseCode() + '). Tente de novo em instantes.');
+    const key = JSON.parse(r.getContentText()).apiKey;
+    Store.set('PLUGGY_KEY', { key, ate: Date.now() + 100 * 60 * 1000 }); // a chave vale 2 h; renova antes
+    return key;
+  },
+  chave_() {
+    const k = Store.get('PLUGGY_KEY');
+    if (k && k.ate > Date.now()) return k.key;
+    const cfg = this.cfg(), secret = Store.p().getProperty('PLUGGY_SECRET');
+    if (!cfg.clientId || !secret) throw new ApiErro('banco_config', 'Conecte o banco em Cadastros → Bancos conectados.');
+    return this.autenticar_(cfg.clientId, secret);
+  },
+  get_(caminho) {
+    const ir = () => UrlFetchApp.fetch(this.API + caminho, { headers: { 'X-API-KEY': this.chave_() }, muteHttpExceptions: true });
+    let r = ir();
+    if (r.getResponseCode() === 401 || r.getResponseCode() === 403) { Store.del('PLUGGY_KEY'); r = ir(); }
+    if (r.getResponseCode() === 404) throw new ApiErro('banco_item', 'A Pluggy não encontrou ' + caminho.split('?')[0] + '. Confira os Item IDs.');
+    if (r.getResponseCode() >= 300) throw new ApiErro('banco_api', 'Erro da Pluggy (' + r.getResponseCode() + ') em ' + caminho.split('?')[0] + '.');
+    return JSON.parse(r.getContentText());
+  },
+
+  /** Data do banco (UTC) no dia de Fortaleza, como a documentação da Pluggy orienta. */
+  dia_(iso) { return Utilities.formatDate(new Date(iso), CONFIG.fuso, 'yyyy-MM-dd'); },
+
+  sugerirCategoria_(t) {
+    const txt = [(t.category || ''), (t.merchant && (t.merchant.category || t.merchant.name) || ''), (t.description || '')].join(' ').toLowerCase();
+    const regras = [
+      [/invest|aplica[cç]|cdb|tesouro|corretora|resgate/, 'Investimentos'],
+      [/supermerc|grocer|mercado|atacad|assa[ií]|carrefour|p[aã]o de a[cç]|hortifr/, 'Mercado'],
+      [/restaur|eating|food|lanch|ifood|aliment|padaria|bakery|caf[eé]|bar |burger|pizza/, 'Alimentação'],
+      [/gas station|posto|combust|shell|ipiranga|petrobr|\bbr mania/, 'Combustível'],
+      [/uber|99 ?app|99pop|taxi|ride|transport|ônibus|onibus|metr[oô]|estaciona|parking|ped[aá]gio|toll/, 'Transporte'],
+      [/pharm|farm[aá]c|drogar|health|sa[uú]de|m[eé]dic|hospital|cl[ií]nica|laborat|dentist|unimed|hapvida/, 'Saúde'],
+      [/educa|school|escola|faculd|universi|curso|course|livrar/, 'Educação'],
+      [/netflix|spotify|disney|prime video|hbo|youtube|apple\.com|google one|icloud|assinatura|subscription|streaming|digital service|chatgpt|openai|anthropic/, 'Assinaturas'],
+      [/rent|aluguel|condom|housing|moradia|energia|enel|coelce|[aá]gua|cagece|g[aá]s |internet|telecom|claro|vivo|tim |oi /, 'Moradia'],
+      [/cinema|show|ingresso|entertain|leisure|lazer|viage|travel|hotel|airbnb|game|playstation|steam/, 'Lazer'],
+      [/shopping|loja|store|magalu|amazon|mercadolivre|mercado livre|shopee|renner|riachuelo|cloth|vestu/, 'Compras pessoais']
+    ];
+    for (const [re, cat] of regras) if (re.test(txt)) return cat;
+    return '';
+  },
+
+  formaSugerida_(t, tipoConta) {
+    if (tipoConta === 'CREDIT') return 'Crédito';
+    const m = String(t.paymentData && t.paymentData.paymentMethod || '').toUpperCase();
+    if (m === 'PIX' || /\bpix\b/i.test(t.description || '')) return 'Pix';
+    return 'Débito';
+  },
+
+  /** Busca as movimentações novas de todos os itens e guarda na aba Banco. */
+  sincronizar() {
+    const cfg = this.cfg();
+    if (!cfg.clientId || !cfg.itens.length) throw new ApiErro('banco_config', 'Cadastre o Client ID, o Secret e pelo menos um Item ID em Cadastros → Bancos conectados.');
+    const estado = Store.get('BANCO_SYNC') || {};
+    const hoje = Utilities.formatDate(new Date(), CONFIG.fuso, 'yyyy-MM-dd');
+    // reabre 10 dias antes da última busca: compras pendentes do cartão mudam de status
+    let de = cfg.desde || this.inicioPadrao_();
+    if (estado.ultima && estado.desdeUsado === de) {
+      const u = new Date(estado.ultima); u.setDate(u.getDate() - 10);
+      const uTxt = Utilities.formatDate(u, CONFIG.fuso, 'yyyy-MM-dd');
+      if (uTxt > de) de = uTxt;
+    }
+    const contas = [], novos = [], erros = [];
+    cfg.itens.forEach(itemId => {
+      try {
+        const item = this.get_('/items/' + itemId);
+        const banco = (item.connector && item.connector.name) || 'Banco';
+        const contasItem = this.get_('/accounts?itemId=' + itemId).results || [];
+        contasItem.forEach(ct => {
+          contas.push({ id: ct.id, nome: ct.marketingName || ct.name || banco, banco, tipo: ct.type, saldo: Number(ct.balance) || 0, item: itemId, consentimento: item.consentExpiresAt || '' });
+          let pagina = 1, total = 1;
+          do {
+            const r = this.get_(`/transactions?accountId=${ct.id}&from=${de}&to=${hoje}&pageSize=500&page=${pagina}`);
+            total = r.totalPages || 1;
+            (r.results || []).forEach(t => novos.push({ t, ct, banco }));
+            pagina++;
+          } while (pagina <= total && pagina <= 20);
+        });
+        if (item.status && item.status !== 'UPDATED' && item.status !== 'UPDATING') erros.push(`${banco}: ${item.status}${item.executionStatus ? ' (' + item.executionStatus + ')' : ''}`);
+      } catch (e) {
+        erros.push((e && e.message) || String(e));
+      }
+    });
+    const qtd = comTrava_(() => this.gravar_(novos));
+    Store.set('BANCO_SYNC', { ultima: new Date().toISOString(), desdeUsado: cfg.desde || de, contas, novos: qtd, erro: erros.join(' | ').slice(0, 400) });
+    if (erros.length && !contas.length) throw new ApiErro('banco_sync', erros[0]);
+    return qtd;
+  },
+
+  gravar_(lista) {
+    const a = this.aba(), vals = a.getDataRange().getValues();
+    const existentes = new Set(vals.slice(1).map(l => String(l[0])));
+    const usados = new Set(vals.slice(1).map(l => String(l[12] || '')).filter(Boolean));
+    // lançamentos e entradas que já existem, para não contar duas vezes
+    const lanc = Lancamentos.aba().getDataRange().getValues().slice(1).filter(l => l[0] !== '' && l[1] !== '')
+      .map(l => ({ id: String(l[7] || ''), data: l[0] instanceof Date ? Utilities.formatDate(l[0], CONFIG.fuso, 'yyyy-MM-dd') : String(l[0]).slice(0, 10), valor: Number(String(l[1]).replace(',', '.')) || 0, origem: String(l[5] || '') }));
+    const receitas = Receitas.listar();
+    const fixos = receitas.filter(r => r.tipo === 'fixo').sort((x, y) => x.mes < y.mes ? -1 : 1);
+    const pendentesFila = vals.slice(1).filter(l => String(l[11]) === 'novo').map(l => ({ data: this.txt_(l[1]), valor: Number(l[2]) || 0, conta: String(l[7]), sentido: String(l[3]) }));
+    const dist = (a1, b1) => Math.abs((new Date(a1 + 'T12:00:00') - new Date(b1 + 'T12:00:00')) / 864e5);
+    const linhas = [];
+    lista.forEach(({ t, ct, banco }) => {
+      if (!t || !t.id || existentes.has(String(t.id))) return;
+      const cartao = ct.type === 'CREDIT';
+      if (!cartao && t.status === 'PENDING') return; // agendado/bloqueado na conta: espera liquidar
+      const bruto = Number(t.amount) || 0;
+      const saida = cartao ? bruto > 0 : (t.type ? t.type === 'DEBIT' : bruto < 0);
+      const valor = Math.round(Math.abs(bruto) * 100) / 100;
+      if (!valor) return;
+      const data = this.dia_(t.date);
+      const desc = String(t.description || t.descriptionRaw || '').slice(0, 200);
+      const cc = t.creditCardMetadata || {};
+      const parcela = cc.totalInstallments > 1 ? `${cc.installmentNumber || 1}/${cc.totalInstallments}` : '';
+      let status = 'novo', vinc = '';
+      const txt = (desc + ' ' + (t.category || '')).toLowerCase();
+      if (cartao && cc.totalInstallments > 1 && (cc.installmentNumber || 1) > 1) status = 'parcela';
+      else if (!saida && cartao) status = /pagamento|pgto|payment/.test(txt) ? 'fatura' : 'novo';
+      else if (saida && !cartao && /credit card payment|pagamento de fatura|pagto fatura|pgto fatura|fatura do cart|pag fatura|pagamento cart/.test(txt)) status = 'fatura';
+      if (status === 'novo' && saida) {
+        const m = lanc.find(l => !usados.has(l.id) && Math.abs(l.valor - valor) < 0.011 && dist(l.data, data) <= 3);
+        if (m) { status = 'duplicado'; vinc = m.id; usados.add(m.id); }
+      }
+      if (status === 'novo' && !saida) {
+        const fixo = fixos.filter(f => f.mes <= data.slice(0, 7)).pop();
+        if (fixo && Math.abs(fixo.valor - valor) <= fixo.valor * 0.03) status = 'salario';
+        const v = receitas.find(r => r.tipo === 'variavel' && r.mes === data.slice(0, 7) && Math.abs(r.valor - valor) < 0.011 && !usados.has(r.id));
+        if (status === 'novo' && v) { status = 'duplicado'; vinc = v.id; usados.add(v.id); }
+      }
+      if (status === 'novo') { // mesma compra que mudou de pendente para lançada (id novo)
+        const p = pendentesFila.findIndex(x => x.conta === ct.id && x.sentido === (saida ? 'saida' : 'entrada') && Math.abs(x.valor - valor) < 0.011 && dist(x.data, data) <= 3);
+        if (p >= 0 && t.status === 'POSTED') { status = 'duplicado'; pendentesFila.splice(p, 1); }
+      }
+      existentes.add(String(t.id));
+      linhas.push([String(t.id), new Date(data + 'T12:00:00'), valor, saida ? 'saida' : 'entrada', desc, String(t.category || ''), saida ? this.sugerirCategoria_(t) : '', ct.id, ct.type || '', banco, parcela, status, vinc, new Date(), saida ? this.formaSugerida_(t, ct.type) : '']);
+      if (status === 'novo') pendentesFila.push({ data, valor, conta: ct.id, sentido: saida ? 'saida' : 'entrada' });
+    });
+    if (linhas.length) {
+      const ini = a.getLastRow() + 1;
+      a.getRange(ini, 1, linhas.length, 1).setNumberFormat('@');
+      a.getRange(ini, 11, linhas.length, 3).setNumberFormat('@');
+      a.getRange(ini, 1, linhas.length, this.CAB.length).setValues(linhas);
+    }
+    return linhas.filter(l => l[11] === 'novo').length;
+  },
+
+  txt_(v) { return v instanceof Date ? Utilities.formatDate(v, CONFIG.fuso, 'yyyy-MM-dd') : String(v || '').slice(0, 10); },
+
+  /** O que o app precisa: configuração (sem o secret), contas e a fila para conferir. */
+  resumo() {
+    const cfg = this.cfg(), estado = Store.get('BANCO_SYNC') || {};
+    const base = { configurado: !!(cfg.clientId && this.temSecret() && cfg.itens.length), clientId: cfg.clientId ? cfg.clientId.slice(0, 8) + '…' : '', temSecret: this.temSecret(), itens: cfg.itens, desde: cfg.desde || '', ultima: estado.ultima || '', erro: estado.erro || '', contas: estado.contas || [], fila: [], contagem: {} };
+    const a = Dados.planilha().getSheetByName(ABA.banco);
+    if (!a || a.getLastRow() < 2) return base;
+    const vals = a.getRange(2, 1, a.getLastRow() - 1, this.CAB.length).getValues();
+    vals.forEach(l => { const st = String(l[11]); base.contagem[st] = (base.contagem[st] || 0) + 1; });
+    base.fila = vals.filter(l => String(l[11]) === 'novo').map(l => ({
+      id: String(l[0]), data: this.txt_(l[1]), valor: Number(l[2]) || 0, sentido: String(l[3]), descricao: String(l[4] || ''),
+      categoriaBanco: String(l[5] || ''), sugestao: String(l[6] || ''), conta: String(l[7]), tipoConta: String(l[8]), banco: String(l[9]),
+      parcela: String(l[10] || ''), forma: String(l[14] || '')
+    })).sort((x, y) => x.data < y.data ? 1 : -1).slice(0, 300);
+    return base;
+  },
+
+  linhasPorId_(a) {
+    const ids = a.getRange(1, 1, a.getLastRow(), 1).getValues();
+    const m = {}; ids.forEach((x, i) => { if (i) m[String(x[0])] = i + 1; }); return m;
+  },
+
+  /** Confirma itens da fila: viram gasto (Origem: Banco) ou entrada variável. Valida tudo antes de gravar. */
+  importar(c, sessao) {
+    const itens = Array.isArray(c.itens) ? c.itens.slice(0, 100) : [];
+    if (!itens.length) throw new ApiErro('banco_vazio', 'Nenhuma movimentação escolhida.');
+    comTrava_(() => {
+      const a = this.aba(), mapa = this.linhasPorId_(a), lanc = Lancamentos.aba();
+      const ops = [];
+      itens.forEach(x => {
+        const linha = mapa[String(x.id)];
+        if (!linha) return;
+        const l = a.getRange(linha, 1, 1, this.CAB.length).getValues()[0];
+        if (String(l[11]) !== 'novo') return;
+        const data = this.txt_(l[1]), valor = Number(l[2]) || 0, desc = V.texto(x.descricao || l[4], 200);
+        if (String(l[3]) === 'saida') {
+          const categoria = V.categoria(x.categoria), forma = V.forma(x.forma || l[14] || 'Débito');
+          const cartao = Ajustes.cartaoValido(forma, x.cartao);
+          const p = String(l[10] || '').split('/'), parcelas = forma === 'Crédito' && p.length === 2 && p[0] === '1' ? V.parcelas(Number(p[1])) : 1;
+          const [y, m, d] = data.split('-').map(Number);
+          ops.push({ linha, saida: true, row: [new Date(y, m - 1, d, 12), parcelas > 1 ? Math.round(valor * parcelas * 100) / 100 : valor, categoria, forma, desc, 'Banco', new Date(), aleatorio_().slice(0, 12), cartao, '', parcelas] });
+        } else {
+          ops.push({ linha, saida: false, e: Receitas.validarEntrada({ valor, data, categoria: x.tipoEntrada || 'Variável', descricao: desc || 'Entrada do banco', recorrente: '' }) });
+        }
+      });
+      ops.forEach(o => {
+        let vinculo;
+        if (o.saida) { lanc.appendRow(o.row); vinculo = o.row[7]; }
+        else vinculo = Receitas.inserir(o.e.mes, 'Variável', o.e.descricao, o.e.valor, sessao, o.e.dia, o.e.categoria, o.e.recorrente);
+        a.getRange(o.linha, 12, 1, 2).setNumberFormat('@').setValues([['importado', vinculo]]);
+        a.getRange(o.linha, 14).setValue(new Date());
+      });
+    });
+  },
+
+  ignorar(c) {
+    const ids = Array.isArray(c.ids) ? c.ids.slice(0, 300).map(String) : [];
+    if (!ids.length) throw new ApiErro('banco_vazio', 'Nenhuma movimentação escolhida.');
+    comTrava_(() => {
+      const a = this.aba(), mapa = this.linhasPorId_(a);
+      ids.forEach(id => { const ln = mapa[id]; if (ln && String(a.getRange(ln, 12).getValue()) === 'novo') { a.getRange(ln, 12).setValue('ignorado'); a.getRange(ln, 14).setValue(new Date()); } });
+    });
+  }
+};
+
+/** Rotina diária (8h): o Meu Pluggy atualiza os bancos a cada 24 h. */
+function sincronizarBancoDiario() {
+  try { Banco.sincronizar(); } catch (e) { console.error('Banco: ' + (e && e.message || e)); }
+}
+
+/** Rode pelo editor para testar a conexão com a Pluggy e ver as contas encontradas. */
+function testarBanco() {
+  const n = Banco.sincronizar();
+  const st = Store.get('BANCO_SYNC') || {};
+  Logger.log('Contas: ' + (st.contas || []).map(c => `${c.banco} · ${c.nome} (${c.tipo}) saldo ${c.saldo}`).join(' | '));
+  Logger.log('Novas para conferir: ' + n + (st.erro ? ' | Avisos: ' + st.erro : ''));
+}
 
 /* =====================================================================
    SETUP (cria formulário + planilha)
@@ -1099,6 +1391,8 @@ function autorizar() {
   ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'lancarContasDoDia').forEach(t => ScriptApp.deleteTrigger(t));
   ScriptApp.newTrigger('lancarContasDoDia').timeBased().everyDays(1).atHour(6).inTimezone(CONFIG.fuso).create();
   Logger.log('⏰ Rotina diária das contas fixas instalada.');
+  UrlFetchApp.getRequest('https://api.pluggy.ai/'); // pede a permissão de conexão externa (Pluggy)
+  if (Banco.cfg().clientId) { Banco.instalarRotina_(); Logger.log('🏦 Rotina diária do banco (8h) instalada.'); }
   Logger.log('✅ Autorizado. Agora atualize a implantação (Gerenciar implantações > Nova versão).');
 }
 

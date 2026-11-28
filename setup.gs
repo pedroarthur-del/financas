@@ -47,7 +47,7 @@ const SEG = {
   aparelhoDias: 60       // "lembrar de mim": dias sem precisar da senha (renova a cada uso)
 };
 
-const VERSAO = '3.2.3';
+const VERSAO = '3.2.4';
 
 const ABA = { respostas: 'Respostas', lanc: 'Lançamentos', tetos: 'Tetos', resumo: 'Resumo', links: 'Links', receitas: 'Receitas', contas: 'Contas fixas', banco: 'Banco' };
 
@@ -1126,18 +1126,17 @@ const Banco = {
         if (m) { status = 'duplicado'; vinc = m.id; usados.add(m.id); }
       }
       if (status === 'novo' && !saida) {
-        const fixo = fixos.filter(f => f.mes <= data.slice(0, 7)).pop();
+        const fixo = fixos.filter(f => f.mes <= data.slice(0, 7)).pop() || fixos[0];
         if (fixo && Math.abs(fixo.valor - valor) <= fixo.valor * 0.03) status = 'salario';
         const v = receitas.find(r => r.tipo === 'variavel' && r.mes === data.slice(0, 7) && Math.abs(r.valor - valor) < 0.011 && !usados.has(r.id));
         if (status === 'novo' && v) { status = 'duplicado'; vinc = v.id; usados.add(v.id); }
       }
-      if (status === 'novo') { // mesma compra que mudou de pendente para lançada (id novo)
+      if (status === 'novo' && cartao && t.status === 'POSTED') { // compra do cartão que passou de pendente para lançada e ganhou id novo
         const p = pendentesFila.findIndex(x => x.conta === ct.id && x.sentido === (saida ? 'saida' : 'entrada') && Math.abs(x.valor - valor) < 0.011 && dist(x.data, data) <= 3);
-        if (p >= 0 && t.status === 'POSTED') { status = 'duplicado'; pendentesFila.splice(p, 1); }
+        if (p >= 0) { status = 'duplicado'; pendentesFila.splice(p, 1); }
       }
       existentes.add(String(t.id));
       linhas.push([String(t.id), new Date(data + 'T12:00:00'), valor, saida ? 'saida' : 'entrada', desc, String(t.category || ''), saida ? this.sugerirCategoria_(t) : '', ct.id, ct.type || '', banco, parcela, status, vinc, new Date(), saida ? this.formaSugerida_(t, ct.type) : '']);
-      if (status === 'novo') pendentesFila.push({ data, valor, conta: ct.id, sentido: saida ? 'saida' : 'entrada' });
     });
     if (linhas.length) {
       const ini = a.getLastRow() + 1;
@@ -1217,6 +1216,15 @@ const Banco = {
 /** Rotina diária (8h): o Meu Pluggy atualiza os bancos a cada 24 h. */
 function sincronizarBancoDiario() {
   try { Banco.sincronizar(); } catch (e) { console.error('Banco: ' + (e && e.message || e)); }
+}
+
+/** Rode pelo editor: apaga a fila do banco que ainda não foi confirmada e busca tudo de novo. Não mexe no que já foi confirmado. */
+function refazerBanco() {
+  const a = Banco.aba(), vals = a.getDataRange().getValues();
+  for (let i = vals.length - 1; i >= 1; i--) if (String(vals[i][11]) !== 'importado' && String(vals[i][11]) !== 'ignorado') a.deleteRow(i + 1);
+  Store.del('BANCO_SYNC');
+  Logger.log('Fila limpa. Novas para conferir: ' + Banco.sincronizar());
+  Logger.log(JSON.stringify((Store.get('BANCO_SYNC') || {}).erro || 'sem avisos'));
 }
 
 /** Rode pelo editor para testar a conexão com a Pluggy e ver as contas encontradas. */
